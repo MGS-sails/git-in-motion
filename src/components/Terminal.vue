@@ -287,7 +287,9 @@ watch(() => props.lines.length, async () => {
 }
 
 .screen {
-  flex: 1;
+  height: 200px;
+  min-height: 150px;
+  max-height: 250px;
   overflow-y: auto;
   padding: 1rem;
   background: rgba(0, 0, 0, 0.3);
@@ -295,6 +297,26 @@ watch(() => props.lines.length, async () => {
   border: 1px solid var(--border-color);
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85rem;
+  scroll-behavior: smooth;
+}
+
+/* Custom scrollbar for terminal */
+.screen::-webkit-scrollbar {
+  width: 8px;
+}
+
+.screen::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+}
+
+.screen::-webkit-scrollbar-thumb {
+  background: rgba(167, 139, 250, 0.3);
+  border-radius: 4px;
+}
+
+.screen::-webkit-scrollbar-thumb:hover {
+  background: rgba(167, 139, 250, 0.5);
 }
 
 .line {
