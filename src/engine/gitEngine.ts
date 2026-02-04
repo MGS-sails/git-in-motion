@@ -86,37 +86,17 @@ export const makeInitialState = (): RepoState => ({
     explanation: "Type a command like `git init` to begin your Git journey! Watch how the graph changes as you work.",
     workingDirectory: [
         {
-            path: "main.py",
-            content: `# Main application
-def main():
-    print("Hello, Git!")
-    print("Welcome to version control")
-
-if __name__ == "__main__":
-    main()
-`
-        },
-        {
-            path: "utils.py",
-            content: `# Utility functions
-def format_message(msg):
-    return f"[INFO] {msg}"
-
-def validate_input(data):
-    return data is not None and len(data) > 0
-`
-        },
-        {
-            path: "README.md",
-            content: `# Git in Motion Project
-
-A visual learning tool for understanding Git concepts.
-
-## Features
-- Interactive Git commands
-- Real-time graph visualization
-- Educational explanations
-`
+            path: "notes.txt",
+            content: `Line 1: Introduction
+Line 2: This is a simple text file
+Line 3: Each line is easy to track
+Line 4: Perfect for learning Git
+Line 5: You can edit any line
+Line 6: Watch how commits work
+Line 7: See branches diverge
+Line 8: Experience merge conflicts
+Line 9: Understand rebasing
+Line 10: Master version control`
         }
     ],
     stagingArea: [],
@@ -169,7 +149,7 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             return { ok: false, error: "Specify file or ." };
         }
 
-        if (target === ".") {
+        if (target === "." || target === "notes.txt") {
             // Add all files from working directory
             state.stagingArea = state.workingDirectory.map(f => ({
                 path: f.path,
@@ -180,18 +160,19 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
 
             // Clear conflicts for added files
             const addedPaths = state.stagingArea.map(f => f.path);
+            const hadConflicts = state.conflicts.length > 0;
             state.conflicts = state.conflicts.filter(c => !addedPaths.includes(c.path));
 
-            if (state.conflicts.length === 0) {
-                state.explanation = `📦 \`git add .\` staged all ${state.stagingArea.length} file(s)! All conflicts resolved. Ready to commit.`;
+            if (hadConflicts && state.conflicts.length === 0) {
+                state.explanation = `📦 File staged! All conflicts resolved. Ready to commit with \`git commit -m "message"\`.`;
             } else {
-                state.explanation = `📦 \`git add .\` staged all ${state.stagingArea.length} file(s)! The staging area is like a loading dock where you prepare what goes into your next commit. Only staged changes become part of the commit.`;
+                state.explanation = `📦 File staged! Check the File Viewer to see what's in the staging area. The staging area is like a loading dock where you prepare what goes into your next commit.`;
             }
         } else {
             // Add specific file
             const file = state.workingDirectory.find(f => f.path === target);
             if (!file) {
-                state.explanation = `File "${target}" not found. Available files: ${state.workingDirectory.map(f => f.path).join(", ")}`;
+                state.explanation = `File "${target}" not found. Use \`git add notes.txt\` or \`git add .\` to stage files.`;
                 return { ok: false, error: `File not found: ${target}` };
             }
 

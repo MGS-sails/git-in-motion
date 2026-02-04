@@ -7,7 +7,6 @@ const props = defineProps<{
 }>();
 
 const isExpanded = ref(true);
-const selectedFile = ref<string>("main.py");
 const isEditing = ref(false);
 const editContent = ref("");
 
@@ -25,20 +24,16 @@ const displayFiles = computed(() => {
     : props.state.workingDirectory;
 });
 
+// We only have one file now (notes.txt)
 const currentFile = computed(() => {
-  return displayFiles.value.find(f => f.path === selectedFile.value);
+  return displayFiles.value[0];
 });
 
 const conflictForFile = computed(() => {
-  return props.state.conflicts.find(c => c.path === selectedFile.value);
+  return props.state.conflicts.find(c => c.path === currentFile.value?.path);
 });
 
 const hasConflicts = computed(() => props.state.conflicts.length > 0);
-
-function selectFile(path: string) {
-  selectedFile.value = path;
-  isEditing.value = false;
-}
 
 function startEdit() {
   isEditing.value = true;
@@ -50,7 +45,7 @@ function saveEdit() {
 
   // Update working directory
   const fileIndex = props.state.workingDirectory.findIndex(
-    f => f.path === selectedFile.value
+    f => f.path === currentFile.value?.path
   );
   if (fileIndex >= 0 && props.state.workingDirectory[fileIndex]) {
     props.state.workingDirectory[fileIndex]!.content = editContent.value;
@@ -64,30 +59,12 @@ function cancelEdit() {
   editContent.value = "";
 }
 
-function getFileIcon(path: string): string {
-  if (path.endsWith('.py')) return '🐍';
-  if (path.endsWith('.md')) return '📝';
-  if (path.endsWith('.js') || path.endsWith('.ts')) return '📜';
-  return '📄';
-}
-
-function highlightSyntax(content: string, path: string): string {
-  if (!path.endsWith('.py')) return content;
-
-  // Basic Python syntax highlighting
-  return content
-    .replace(/\b(def|class|if|elif|else|for|while|return|import|from|as|try|except|finally|with|lambda|yield|raise|pass|break|continue)\b/g, '<span class="keyword">$1</span>')
-    .replace(/(#.*$)/gm, '<span class="comment">$1</span>')
-    .replace(/(".*?"|\'.*?\')/g, '<span class="string">$1</span>')
-    .replace(/\b(\d+)\b/g, '<span class="number">$1</span>');
-}
-
 function acceptOurs() {
   const conflict = conflictForFile.value;
-  if (!conflict) return;
+  if (!conflict || !currentFile.value) return;
 
   const fileIndex = props.state.workingDirectory.findIndex(
-    f => f.path === selectedFile.value
+    f => f.path === currentFile.value?.path
   );
   if (fileIndex >= 0 && props.state.workingDirectory[fileIndex]) {
     props.state.workingDirectory[fileIndex]!.content = conflict.ours;
@@ -96,16 +73,16 @@ function acceptOurs() {
 
   // Remove from conflicts
   props.state.conflicts = props.state.conflicts.filter(
-    c => c.path !== selectedFile.value
+    c => c.path !== currentFile.value?.path
   );
 }
 
 function acceptTheirs() {
   const conflict = conflictForFile.value;
-  if (!conflict) return;
+  if (!conflict || !currentFile.value) return;
 
   const fileIndex = props.state.workingDirectory.findIndex(
-    f => f.path === selectedFile.value
+    f => f.path === currentFile.value?.path
   );
   if (fileIndex >= 0 && props.state.workingDirectory[fileIndex]) {
     props.state.workingDirectory[fileIndex]!.content = conflict.theirs;
@@ -114,7 +91,7 @@ function acceptTheirs() {
 
   // Remove from conflicts
   props.state.conflicts = props.state.conflicts.filter(
-    c => c.path !== selectedFile.value
+    c => c.path !== currentFile.value?.path
   );
 }
 
@@ -140,26 +117,21 @@ function highlightConflicts(content: string): string {
 
     <transition name="expand">
       <div v-if="isExpanded" class="file-viewer__content">
-      <!-- File tabs -->
-      <div class="file-tabs">
-        <button
-          v-for="file in displayFiles"
-          :key="file.path"
-          :class="['file-tab', { active: selectedFile === file.path, conflicted: file.isConflicted }]"
-          @click="selectFile(file.path)"
-        >
-          {{ getFileIcon(file.path) }} {{ file.path }}
-          <span v-if="file.isConflicted" class="conflict-dot">⚠️</span>
+      <!-- File name header -->
+      <div class="file-header">
+        <span class="file-name">📄 {{ currentFile?.path || 'notes.txt' }}</span>
+        <button v-if="!isEditing && !conflictForFile" @click="startEdit" class="btn-small btn-edit">
+          ✏️ Edit
         </button>
       </div>
 
       <!-- Conflict banner -->
       <div v-if="conflictForFile" class="conflict-banner">
         <div class="conflict-banner__text">
-          ⚠️ Merge conflict detected in {{ selectedFile }}
+          ⚠️ Merge conflict detected - resolve by choosing one version or editing manually
         </div>
         <div class="conflict-banner__actions">
-          <button @click="acceptOurs" class="btn-small btn-ours">Accept Ours</button>
+          <button @click="acceptOurs" class="btn-small btn-ours">Accept Ours (HEAD)</button>
           <button @click="acceptTheirs" class="btn-small btn-theirs">Accept Theirs</button>
           <button @click="startEdit" class="btn-small">Edit Manually</button>
         </div>
@@ -169,7 +141,7 @@ function highlightConflicts(content: string): string {
       <div v-if="currentFile" class="file-content">
         <div v-if="!isEditing" class="file-display" @click="startEdit">
           <pre v-if="currentFile.isConflicted" v-html="highlightConflicts(currentFile.content)"></pre>
-          <pre v-else v-html="highlightSyntax(currentFile.content, currentFile.path)"></pre>
+          <pre v-else>{{ currentFile.content }}</pre>
         </div>
 
         <div v-else class="file-editor">
@@ -267,47 +239,30 @@ function highlightConflicts(content: string): string {
   animation: fadeIn 0.4s ease-out;
 }
 
-.file-tabs {
+.file-header {
   display: flex;
-  gap: 0.5rem;
-  padding: 1rem;
-  border-bottom: 1px solid var(--border-color);
-  overflow-x: auto;
-}
-
-.file-tab {
-  padding: 0.5rem 1rem;
-  border-radius: 8px;
-  border: 1px solid var(--border-color);
-  background: var(--bg-glass);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.3s ease;
-  white-space: nowrap;
-  display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 0.5rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border-color);
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.file-name {
+  font-family: 'JetBrains Mono', monospace;
   font-size: 0.9rem;
+  color: var(--text-secondary);
+  font-weight: 500;
 }
 
-.file-tab:hover {
-  border-color: var(--color-commit);
-  color: var(--text-primary);
-}
-
-.file-tab.active {
+.btn-edit {
   background: rgba(167, 139, 250, 0.15);
   border-color: var(--color-commit);
   color: var(--color-commit);
 }
 
-.file-tab.conflicted {
-  border-color: rgba(251, 191, 36, 0.5);
-  background: rgba(251, 191, 36, 0.1);
-}
-
-.conflict-dot {
-  font-size: 0.75rem;
+.btn-edit:hover {
+  background: rgba(167, 139, 250, 0.25);
 }
 
 .conflict-banner {
@@ -386,29 +341,11 @@ function highlightConflicts(content: string): string {
 .file-display pre {
   margin: 0;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 0.9rem;
-  line-height: 1.6;
+  font-size: 0.95rem;
+  line-height: 1.8;
   color: var(--text-primary);
   white-space: pre-wrap;
   word-wrap: break-word;
-}
-
-.file-display :deep(.keyword) {
-  color: #c678dd;
-  font-weight: 600;
-}
-
-.file-display :deep(.comment) {
-  color: #5c6370;
-  font-style: italic;
-}
-
-.file-display :deep(.string) {
-  color: #98c379;
-}
-
-.file-display :deep(.number) {
-  color: #d19a66;
 }
 
 .file-display :deep(.conflict-ours) {
