@@ -311,7 +311,7 @@ const getBranchOffset = (branchIndex: number) => branchIndex * 28;
         <!-- Time flow arrow -->
         <g class="time-indicator">
           <text class="time-label" x="30" :y="PADDING_Y" text-anchor="middle" fill="var(--text-muted)">
-            newest
+            oldest
           </text>
           <line
             class="time-arrow"
@@ -325,7 +325,7 @@ const getBranchOffset = (branchIndex: number) => branchIndex * 28;
             opacity="0.3"
           />
           <text class="time-label" x="30" :y="size.height - 40" text-anchor="middle" fill="var(--text-muted)">
-            oldest
+            newest
           </text>
         </g>
 

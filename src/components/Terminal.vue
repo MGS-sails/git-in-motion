@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, computed } from "vue";
+import { ref, nextTick, watch, computed, onUnmounted } from "vue";
 import type { RepoState } from "../engine/types";
 
 const props = defineProps<{
@@ -10,6 +10,8 @@ const props = defineProps<{
 
 const input = ref("");
 const screenRef = ref<HTMLElement | null>(null);
+const clickTimer = ref<number | null>(null);
+const clickDelay = 250; // milliseconds to wait for double-click
 
 const quickCommands = computed(() => {
   const hasBranches = Object.keys(props.state.branches).length > 1;
@@ -48,8 +50,24 @@ function submit() {
   input.value = "";
 }
 
-function runQuick(cmd: string) {
-  props.onRun(cmd);
+function handleQuickClick(cmd: string) {
+  // Single click: populate the input field
+  if (clickTimer.value !== null) {
+    // This is a double-click, cancel the single-click timer
+    clearTimeout(clickTimer.value);
+    clickTimer.value = null;
+    // Double-click: populate and run
+    input.value = cmd;
+    props.onRun(cmd);
+    input.value = "";
+  } else {
+    // Wait to see if this becomes a double-click
+    clickTimer.value = window.setTimeout(() => {
+      // Single click confirmed: just populate
+      input.value = cmd;
+      clickTimer.value = null;
+    }, clickDelay);
+  }
 }
 
 // Auto-scroll to bottom when new lines are added
@@ -57,6 +75,13 @@ watch(() => props.lines.length, async () => {
   await nextTick();
   if (screenRef.value) {
     screenRef.value.scrollTop = screenRef.value.scrollHeight;
+  }
+});
+
+// Cleanup timer on unmount
+onUnmounted(() => {
+  if (clickTimer.value !== null) {
+    clearTimeout(clickTimer.value);
   }
 });
 </script>
@@ -81,19 +106,28 @@ watch(() => props.lines.length, async () => {
       </div>
     </div>
 
-    <div class="quick-commands">
-      <button
+    <div class="quick-commands-section">
+      <div class="quick-commands-hint">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M12 16v-4M12 8h.01"/>
+        </svg>
+        <span>Click to populate, double-click to run</span>
+      </div>
+      <div class="quick-commands">
+        <button
         v-for="qc in quickCommands"
         :key="qc.cmd"
         class="quick-btn"
         :class="{ 'quick-btn--available': qc.available, 'quick-btn--disabled': !qc.available }"
-        @click="qc.available && runQuick(qc.cmd)"
+        @click="qc.available && handleQuickClick(qc.cmd)"
         :disabled="!qc.available"
-        :title="qc.cmd"
+        :title="`${qc.cmd} (click: populate, double-click: run)`"
       >
         <span class="quick-btn__icon">{{ qc.icon }}</span>
         <span class="quick-btn__label">{{ qc.label }}</span>
       </button>
+      </div>
     </div>
 
     <div ref="screenRef" class="screen">
@@ -238,6 +272,29 @@ watch(() => props.lines.length, async () => {
   border-radius: 50%;
   background: var(--color-branch);
   animation: pulse 2s ease-in-out infinite;
+}
+
+.quick-commands-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.quick-commands-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+}
+
+.quick-commands-hint svg {
+  flex-shrink: 0;
+  opacity: 0.7;
 }
 
 .quick-commands {
