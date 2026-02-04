@@ -22,17 +22,24 @@ const commitById = computed(() => {
   return m;
 });
 
+// Layout constants - much more spacious
+const LANE_WIDTH = 220;      // Horizontal spacing between lanes
+const ROW_HEIGHT = 140;      // Vertical spacing between commits
+const PADDING_X = 140;       // Left padding
+const PADDING_Y = 100;       // Top padding
+const NODE_RADIUS = 24;      // Larger commit nodes
+
 const size = computed(() => {
   const maxY = props.state.commits.length ? Math.max(...props.state.commits.map((c) => c.y)) : 0;
   const maxX = props.state.commits.length ? Math.max(...props.state.commits.map((c) => c.x)) : 0;
-  const width = Math.max(500, 160 + maxX * 160);
-  const height = Math.max(200, 140 + maxY * 100);
+  const width = Math.max(600, PADDING_X * 2 + maxX * LANE_WIDTH + 200);
+  const height = Math.max(400, PADDING_Y * 2 + maxY * ROW_HEIGHT + 100);
   return { width, height };
 });
 
 const pos = (x: number, y: number) => {
-  const cx = 100 + x * 160;
-  const cy = 90 + y * 100;
+  const cx = PADDING_X + x * LANE_WIDTH;
+  const cy = PADDING_Y + y * ROW_HEIGHT;
   return { cx, cy };
 };
 
@@ -46,24 +53,51 @@ const headPos = computed(() => {
   return { ...p, branch: b.name };
 });
 
-// Calculate edge path with bezier curves
-const getEdgePath = (commit: Commit, parentId: string) => {
+// Calculate edge path with smooth bezier curves
+const getEdgePath = (commit: Commit, parentId: string, isMergeEdge: boolean) => {
   const parent = commitById.value.get(parentId);
   if (!parent) return "";
 
   const a = pos(commit.x, commit.y);
   const b = pos(parent.x, parent.y);
 
-  // Create smooth bezier curve
-  const midY = (a.cy + b.cy) / 2;
-  return `M ${a.cx} ${a.cy} C ${a.cx} ${midY}, ${b.cx} ${midY}, ${b.cx} ${b.cy}`;
+  // For merge edges (coming from another branch), use a curved path
+  if (isMergeEdge || commit.x !== parent.x) {
+    const controlY1 = a.cy - ROW_HEIGHT * 0.4;
+    const controlY2 = b.cy + ROW_HEIGHT * 0.4;
+    return `M ${a.cx} ${a.cy - NODE_RADIUS}
+            C ${a.cx} ${controlY1},
+              ${b.cx} ${controlY2},
+              ${b.cx} ${b.cy + NODE_RADIUS}`;
+  }
+
+  // For straight-line edges (same branch)
+  return `M ${a.cx} ${a.cy - NODE_RADIUS} L ${b.cx} ${b.cy + NODE_RADIUS}`;
 };
 
 // Check if commit is a merge commit
 const isMergeCommit = (commit: Commit) => commit.parents.length > 1;
 
+// Check if commit is HEAD
+const isHeadCommit = (commitId: string) => {
+  if (!props.state.head) return false;
+  if (props.state.head.type === "branch") {
+    const b = props.state.branches[props.state.head.name];
+    return b?.head === commitId;
+  }
+  return props.state.head.commit === commitId;
+};
+
 // Get animation delay based on commit index
-const getCommitDelay = (index: number) => `${index * 0.1}s`;
+const getCommitDelay = (index: number) => `${index * 0.15}s`;
+
+// Get branches pointing to a specific commit
+const getBranchesAtCommit = (commitId: string) => {
+  return Object.values(props.state.branches).filter(b => b.head === commitId);
+};
+
+// Calculate branch label offset to avoid overlapping
+const getBranchOffset = (branchIndex: number) => branchIndex * 28;
 </script>
 
 <template>
@@ -80,42 +114,49 @@ const getCommitDelay = (index: number) => `${index * 0.1}s`;
       </div>
 
       <div class="graph__legend">
-        <span class="legend-item legend-item--staging" v-if="state.stagingCount > 0">
-          <span class="legend-dot" style="background: var(--color-staging)"></span>
-          <span class="legend-count">{{ state.stagingCount }}</span>
-          staged
-        </span>
-        <span class="legend-item legend-item--active" v-if="state.activeBranch">
-          <span class="legend-dot" style="background: var(--color-head)"></span>
-          {{ state.activeBranch }}
-        </span>
+        <div class="legend-item" v-if="state.stagingCount > 0">
+          <div class="legend-indicator legend-indicator--staging">
+            <span class="staging-pulse"></span>
+          </div>
+          <span><strong>{{ state.stagingCount }}</strong> staged</span>
+        </div>
+        <div class="legend-item legend-item--branch" v-if="state.activeBranch">
+          <div class="legend-indicator legend-indicator--head"></div>
+          <span>on <strong>{{ state.activeBranch }}</strong></span>
+        </div>
       </div>
     </div>
 
     <div class="graph__canvas">
       <!-- Empty state -->
       <div v-if="!state.initialized" class="empty-state">
-        <div class="empty-icon">
-          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3">
-            <circle cx="12" cy="12" r="10" />
-            <path d="M12 6v6l4 2" />
-          </svg>
+        <div class="empty-visual">
+          <div class="empty-node empty-node--1"></div>
+          <div class="empty-node empty-node--2"></div>
+          <div class="empty-node empty-node--3"></div>
+          <div class="empty-line"></div>
         </div>
-        <p class="empty-text">Run <code>git init</code> to start</p>
+        <div class="empty-content">
+          <h3>No Repository Yet</h3>
+          <p>Run <code>git init</code> to create a repository and start visualizing your commits.</p>
+        </div>
       </div>
 
       <!-- Initialized but no commits -->
       <div v-else-if="state.commits.length === 0" class="empty-state">
-        <div class="empty-icon pulse-animation">
-          <svg width="64" height="64" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="8" fill="var(--color-staging)" opacity="0.2" />
-            <circle cx="12" cy="12" r="4" fill="var(--color-staging)" opacity="0.4" />
-          </svg>
+        <div class="empty-visual">
+          <div class="staging-area">
+            <div class="staging-icon">📦</div>
+            <div class="staging-ring"></div>
+          </div>
         </div>
-        <p class="empty-text">
-          Add files with <code>git add .</code><br />
-          then commit with <code>git commit -m "msg"</code>
-        </p>
+        <div class="empty-content">
+          <h3>Ready to Commit</h3>
+          <p>
+            Stage changes with <code>git add .</code><br />
+            Then create your first commit with <code>git commit -m "message"</code>
+          </p>
+        </div>
       </div>
 
       <!-- SVG Graph -->
@@ -127,74 +168,157 @@ const getCommitDelay = (index: number) => `${index * 0.1}s`;
         :viewBox="`0 0 ${size.width} ${size.height}`"
       >
         <defs>
-          <!-- Gradient for edges -->
+          <!-- Gradient for commit edges -->
           <linearGradient id="edgeGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stop-color="var(--color-commit)" stop-opacity="0.6" />
-            <stop offset="100%" stop-color="var(--color-commit)" stop-opacity="0.2" />
+            <stop offset="0%" stop-color="var(--color-commit)" stop-opacity="0.8" />
+            <stop offset="100%" stop-color="var(--color-commit)" stop-opacity="0.3" />
           </linearGradient>
 
           <!-- Gradient for merge edges -->
           <linearGradient id="mergeEdgeGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stop-color="var(--color-merge)" stop-opacity="0.6" />
-            <stop offset="100%" stop-color="var(--color-merge)" stop-opacity="0.2" />
+            <stop offset="0%" stop-color="var(--color-merge)" stop-opacity="0.8" />
+            <stop offset="100%" stop-color="var(--color-merge)" stop-opacity="0.3" />
           </linearGradient>
 
-          <!-- Glow filter for HEAD -->
-          <filter id="headGlow" x="-50%" y="-50%" width="200%" height="200%">
-            <feGaussianBlur stdDeviation="4" result="coloredBlur" />
+          <!-- Commit node gradient -->
+          <radialGradient id="commitGradient" cx="30%" cy="30%">
+            <stop offset="0%" stop-color="#c4b5fd" />
+            <stop offset="100%" stop-color="var(--color-commit)" />
+          </radialGradient>
+
+          <!-- Merge commit gradient -->
+          <radialGradient id="mergeGradient" cx="30%" cy="30%">
+            <stop offset="0%" stop-color="#f9a8d4" />
+            <stop offset="100%" stop-color="var(--color-merge)" />
+          </radialGradient>
+
+          <!-- HEAD glow filter -->
+          <filter id="headGlow" x="-100%" y="-100%" width="300%" height="300%">
+            <feGaussianBlur stdDeviation="8" result="blur" />
+            <feFlood flood-color="var(--color-head)" flood-opacity="0.6" />
+            <feComposite in2="blur" operator="in" />
             <feMerge>
-              <feMergeNode in="coloredBlur" />
+              <feMergeNode />
               <feMergeNode in="SourceGraphic" />
             </feMerge>
           </filter>
 
-          <!-- Commit node gradient -->
-          <radialGradient id="commitGradient">
-            <stop offset="0%" stop-color="var(--color-commit)" />
-            <stop offset="100%" stop-color="#7c3aed" />
-          </radialGradient>
+          <!-- Commit glow filter -->
+          <filter id="commitGlow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="4" result="blur" />
+            <feFlood flood-color="var(--color-commit)" flood-opacity="0.4" />
+            <feComposite in2="blur" operator="in" />
+            <feMerge>
+              <feMergeNode />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
 
-          <!-- Merge commit gradient -->
-          <radialGradient id="mergeGradient">
-            <stop offset="0%" stop-color="var(--color-merge)" />
-            <stop offset="100%" stop-color="#db2777" />
-          </radialGradient>
+          <!-- Arrow marker for flow direction -->
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="var(--color-commit)" opacity="0.5" />
+          </marker>
         </defs>
 
-        <!-- Grid pattern (subtle) -->
-        <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-          <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255,255,255,0.03)" stroke-width="1"/>
-        </pattern>
-        <rect width="100%" height="100%" fill="url(#grid)" />
+        <!-- Background grid -->
+        <g class="grid-layer">
+          <pattern id="smallGrid" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(255,255,255,0.02)" stroke-width="0.5"/>
+          </pattern>
+          <pattern id="largeGrid" width="100" height="100" patternUnits="userSpaceOnUse">
+            <rect width="100" height="100" fill="url(#smallGrid)"/>
+            <path d="M 100 0 L 0 0 0 100" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+          </pattern>
+          <rect width="100%" height="100%" fill="url(#largeGrid)" />
+        </g>
+
+        <!-- Lane indicators (vertical lines showing branch paths) -->
+        <g class="lane-indicators">
+          <g v-for="branch in Object.values(state.branches)" :key="'lane-' + branch.name">
+            <line
+              v-if="branch.head"
+              class="lane-line"
+              :x1="PADDING_X + branch.lane * LANE_WIDTH"
+              y1="40"
+              :x2="PADDING_X + branch.lane * LANE_WIDTH"
+              :y2="size.height - 40"
+              :style="{
+                stroke: branch.name === state.activeBranch ? 'var(--color-head)' : 'rgba(255,255,255,0.06)',
+                strokeWidth: branch.name === state.activeBranch ? 2 : 1
+              }"
+            />
+            <!-- Lane label at top -->
+            <text
+              v-if="branch.head"
+              class="lane-label"
+              :x="PADDING_X + branch.lane * LANE_WIDTH"
+              y="28"
+              text-anchor="middle"
+              :style="{ fill: branch.name === state.activeBranch ? 'var(--color-head)' : 'var(--text-muted)' }"
+            >
+              {{ branch.name }}
+            </text>
+          </g>
+        </g>
+
+        <!-- Time flow arrow -->
+        <g class="time-indicator">
+          <text class="time-label" x="30" :y="PADDING_Y" text-anchor="middle" fill="var(--text-muted)">
+            newest
+          </text>
+          <line
+            class="time-arrow"
+            x1="30"
+            :y1="PADDING_Y + 20"
+            x2="30"
+            :y2="size.height - 60"
+            stroke="var(--text-muted)"
+            stroke-width="1"
+            stroke-dasharray="4,4"
+            opacity="0.3"
+          />
+          <text class="time-label" x="30" :y="size.height - 40" text-anchor="middle" fill="var(--text-muted)">
+            oldest
+          </text>
+        </g>
 
         <!-- Edges (connections between commits) -->
         <g class="edges">
           <template v-for="c in state.commits" :key="'edge-' + c.id">
             <template v-for="(pId, pIndex) in c.parents" :key="pId">
-              <path
-                v-if="commitById.get(pId)"
-                class="edge"
-                :class="{ 'edge--merge': pIndex > 0 }"
-                :d="getEdgePath(c, pId)"
-                :stroke="pIndex > 0 ? 'url(#mergeEdgeGradient)' : 'url(#edgeGradient)'"
-              />
+            <path
+              v-if="commitById.get(pId)"
+              class="edge"
+              :class="{
+                'edge--merge': pIndex > 0,
+                'edge--active': state.activeBranch && state.branches[state.activeBranch]?.lane === c.x
+              }"
+              :d="getEdgePath(c, pId, pIndex > 0)"
+              :stroke="pIndex > 0 ? 'url(#mergeEdgeGradient)' : 'url(#edgeGradient)'"
+            />
             </template>
           </template>
         </g>
 
-        <!-- HEAD glow ring -->
+        <!-- HEAD indicator rings -->
         <g v-if="headPos" class="head-indicator">
           <circle
             class="head-ring head-ring--outer"
             :cx="headPos.cx"
             :cy="headPos.cy"
-            r="32"
+            :r="NODE_RADIUS + 20"
+          />
+          <circle
+            class="head-ring head-ring--middle"
+            :cx="headPos.cx"
+            :cy="headPos.cy"
+            :r="NODE_RADIUS + 12"
           />
           <circle
             class="head-ring head-ring--inner"
             :cx="headPos.cx"
             :cy="headPos.cy"
-            r="26"
+            :r="NODE_RADIUS + 6"
           />
         </g>
 
@@ -204,15 +328,16 @@ const getCommitDelay = (index: number) => `${index * 0.1}s`;
             v-for="(c, index) in state.commits"
             :key="c.id"
             class="commit"
+            :class="{ 'commit--head': isHeadCommit(c.id) }"
             :style="{ '--delay': getCommitDelay(index) }"
           >
-            <!-- Commit glow background -->
+            <!-- Outer glow ring -->
             <circle
               class="node-glow"
               :class="{ 'node-glow--merge': isMergeCommit(c) }"
               :cx="pos(c.x, c.y).cx"
               :cy="pos(c.x, c.y).cy"
-              r="22"
+              :r="NODE_RADIUS + 8"
             />
 
             <!-- Main commit circle -->
@@ -220,69 +345,110 @@ const getCommitDelay = (index: number) => `${index * 0.1}s`;
               class="node"
               :class="{
                 'node--merge': isMergeCommit(c),
-                'node--head': state.head?.type === 'branch' && state.branches[state.head.name]?.head === c.id
+                'node--head': isHeadCommit(c.id)
               }"
               :cx="pos(c.x, c.y).cx"
               :cy="pos(c.x, c.y).cy"
-              r="16"
+              :r="NODE_RADIUS"
               :fill="isMergeCommit(c) ? 'url(#mergeGradient)' : 'url(#commitGradient)'"
+              :filter="isHeadCommit(c.id) ? 'url(#headGlow)' : ''"
             />
 
             <!-- Inner highlight -->
             <circle
               class="node-highlight"
-              :cx="pos(c.x, c.y).cx - 4"
-              :cy="pos(c.x, c.y).cy - 4"
-              r="4"
+              :cx="pos(c.x, c.y).cx - 6"
+              :cy="pos(c.x, c.y).cy - 6"
+              r="6"
             />
 
-            <!-- Commit ID (hash) -->
+            <!-- Commit type icon -->
             <text
-              class="commit-id"
+              class="node-icon"
               :x="pos(c.x, c.y).cx"
-              :y="pos(c.x, c.y).cy - 28"
+              :y="pos(c.x, c.y).cy + 5"
               text-anchor="middle"
             >
-              {{ c.id }}
+              {{ isMergeCommit(c) ? '⚭' : '●' }}
             </text>
 
-            <!-- Commit message -->
-            <text
-              class="commit-message"
-              :x="pos(c.x, c.y).cx + 28"
-              :y="pos(c.x, c.y).cy + 5"
-            >
-              {{ c.message }}
-            </text>
+            <!-- Commit message label -->
+            <g class="commit-label">
+              <rect
+                class="commit-label-bg"
+                :x="pos(c.x, c.y).cx + NODE_RADIUS + 12"
+                :y="pos(c.x, c.y).cy - 12"
+                :width="Math.min(c.message.length * 8 + 16, 180)"
+                height="24"
+                rx="6"
+              />
+              <text
+                class="commit-message"
+                :x="pos(c.x, c.y).cx + NODE_RADIUS + 20"
+                :y="pos(c.x, c.y).cy + 4"
+              >
+                {{ c.message.length > 20 ? c.message.slice(0, 18) + '...' : c.message }}
+              </text>
+            </g>
+
+            <!-- Commit ID badge -->
+            <g class="commit-id-badge">
+              <rect
+                class="id-badge-bg"
+                :x="pos(c.x, c.y).cx - 28"
+                :y="pos(c.x, c.y).cy - NODE_RADIUS - 24"
+                width="56"
+                height="18"
+                rx="9"
+              />
+              <text
+                class="commit-id"
+                :x="pos(c.x, c.y).cx"
+                :y="pos(c.x, c.y).cy - NODE_RADIUS - 11"
+                text-anchor="middle"
+              >
+                {{ c.id }}
+              </text>
+            </g>
           </g>
         </g>
 
-        <!-- Branch labels -->
-        <g class="branches">
-          <g v-for="b in Object.values(state.branches)" :key="b.name">
-            <template v-if="b.head && commitById.get(b.head)">
-              <g class="branch-label" :class="{ 'branch-label--active': b.name === state.activeBranch }">
-                <!-- Branch tag background -->
-                <rect
-                  class="branch-tag"
-                  :x="pos(commitById.get(b.head)!.x, commitById.get(b.head)!.y).cx - 35"
-                  :y="pos(commitById.get(b.head)!.x, commitById.get(b.head)!.y).cy - 52"
-                  width="70"
-                  height="22"
-                  rx="11"
-                />
+        <!-- Branch pointers -->
+        <g class="branch-pointers">
+          <g v-for="c in state.commits" :key="'branch-ptr-' + c.id">
+            <g
+              v-for="(branch, bIndex) in getBranchesAtCommit(c.id)"
+              :key="branch.name"
+              class="branch-pointer"
+              :class="{ 'branch-pointer--active': branch.name === state.activeBranch }"
+            >
+              <!-- Pointer line -->
+              <line
+                class="branch-line"
+                :x1="pos(c.x, c.y).cx - NODE_RADIUS - 15"
+                :y1="pos(c.x, c.y).cy + getBranchOffset(bIndex)"
+                :x2="pos(c.x, c.y).cx - NODE_RADIUS - 5"
+                :y2="pos(c.x, c.y).cy"
+              />
 
-                <!-- Branch name -->
-                <text
-                  class="branch-name"
-                  :x="pos(commitById.get(b.head)!.x, commitById.get(b.head)!.y).cx"
-                  :y="pos(commitById.get(b.head)!.x, commitById.get(b.head)!.y).cy - 37"
-                  text-anchor="middle"
-                >
-                  {{ b.name }}
-                </text>
-              </g>
-            </template>
+              <!-- Branch tag -->
+              <rect
+                class="branch-tag"
+                :x="pos(c.x, c.y).cx - NODE_RADIUS - 15 - 70"
+                :y="pos(c.x, c.y).cy - 11 + getBranchOffset(bIndex)"
+                width="68"
+                height="22"
+                rx="11"
+              />
+              <text
+                class="branch-name"
+                :x="pos(c.x, c.y).cx - NODE_RADIUS - 15 - 36"
+                :y="pos(c.x, c.y).cy + 4 + getBranchOffset(bIndex)"
+                text-anchor="middle"
+              >
+                {{ branch.name }}
+              </text>
+            </g>
           </g>
         </g>
 
@@ -290,22 +456,44 @@ const getCommitDelay = (index: number) => `${index * 0.1}s`;
         <g v-if="headPos" class="head-label">
           <rect
             class="head-tag"
-            :x="headPos.cx - 28"
-            :y="headPos.cy + 42"
-            width="56"
-            height="20"
-            rx="10"
+            :x="headPos.cx - 32"
+            :y="headPos.cy + NODE_RADIUS + 15"
+            width="64"
+            height="26"
+            rx="13"
           />
           <text
             class="head-text"
             :x="headPos.cx"
-            :y="headPos.cy + 56"
+            :y="headPos.cy + NODE_RADIUS + 33"
             text-anchor="middle"
           >
             HEAD
           </text>
         </g>
       </svg>
+    </div>
+
+    <!-- Visual Legend -->
+    <div class="graph__footer" v-if="state.commits.length > 0">
+      <div class="mini-legend">
+        <div class="mini-legend-item">
+          <span class="mini-dot mini-dot--commit"></span>
+          <span>Commit</span>
+        </div>
+        <div class="mini-legend-item">
+          <span class="mini-dot mini-dot--merge"></span>
+          <span>Merge</span>
+        </div>
+        <div class="mini-legend-item">
+          <span class="mini-dot mini-dot--branch"></span>
+          <span>Branch</span>
+        </div>
+        <div class="mini-legend-item">
+          <span class="mini-dot mini-dot--head"></span>
+          <span>HEAD</span>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -315,9 +503,9 @@ const getCommitDelay = (index: number) => `${index * 0.1}s`;
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  padding: 1rem;
+  padding: 1.25rem;
   flex: 1;
-  min-height: 300px;
+  min-height: 450px;
 }
 
 .graph__header {
@@ -326,15 +514,16 @@ const getCommitDelay = (index: number) => `${index * 0.1}s`;
   align-items: center;
   flex-wrap: wrap;
   gap: 1rem;
-  padding-bottom: 0.75rem;
+  padding-bottom: 1rem;
   border-bottom: 1px solid var(--border-color);
 }
 
 .graph__title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-weight: 600;
+  font-size: 1.05rem;
   color: var(--text-primary);
 }
 
@@ -344,198 +533,255 @@ const getCommitDelay = (index: number) => `${index * 0.1}s`;
 
 .graph__legend {
   display: flex;
-  gap: 1rem;
+  gap: 1.25rem;
 }
 
 .legend-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 0.8rem;
+  gap: 8px;
+  font-size: 0.85rem;
   color: var(--text-secondary);
 }
 
-.legend-dot {
-  width: 8px;
-  height: 8px;
+.legend-item strong {
+  color: var(--text-primary);
+}
+
+.legend-indicator {
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
+  position: relative;
 }
 
-.legend-count {
-  font-weight: 600;
-  color: var(--color-staging);
+.legend-indicator--staging {
+  background: var(--color-staging);
 }
 
-.legend-item--active {
-  padding: 4px 12px;
+.staging-pulse {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: var(--color-staging);
+  opacity: 0.4;
+  animation: stagingPulse 2s ease-in-out infinite;
+}
+
+@keyframes stagingPulse {
+  0%, 100% { transform: scale(1); opacity: 0.4; }
+  50% { transform: scale(1.5); opacity: 0; }
+}
+
+.legend-indicator--head {
+  background: var(--color-head);
+  box-shadow: 0 0 10px var(--color-head);
+}
+
+.legend-item--branch {
+  padding: 6px 14px;
   background: rgba(251, 191, 36, 0.1);
-  border: 1px solid rgba(251, 191, 36, 0.3);
+  border: 1px solid rgba(251, 191, 36, 0.25);
   border-radius: 999px;
-  color: var(--color-head);
-  font-weight: 500;
 }
 
 .graph__canvas {
   flex: 1;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.2);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(167, 139, 250, 0.05) 0%, transparent 50%),
+    rgba(0, 0, 0, 0.25);
   border-radius: 16px;
   border: 1px solid var(--border-color);
   overflow: auto;
-  padding: 1rem;
+  padding: 1.5rem;
+  min-height: 380px;
 }
 
+/* Empty States */
 .empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1rem;
-  padding: 2rem;
+  justify-content: center;
+  gap: 2rem;
+  padding: 3rem;
   text-align: center;
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
 }
 
-.empty-icon {
+.empty-visual {
+  position: relative;
+  width: 160px;
+  height: 120px;
+}
+
+.empty-node {
+  position: absolute;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--color-commit);
+  opacity: 0.2;
+}
+
+.empty-node--1 {
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  animation: emptyPulse 3s ease-in-out infinite;
+}
+
+.empty-node--2 {
+  top: 44px;
+  left: 20%;
+  animation: emptyPulse 3s ease-in-out infinite 0.5s;
+}
+
+.empty-node--3 {
+  top: 88px;
+  left: 70%;
+  animation: emptyPulse 3s ease-in-out infinite 1s;
+}
+
+.empty-line {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  width: 2px;
+  height: 90px;
+  background: linear-gradient(to bottom, var(--color-commit), transparent);
+  opacity: 0.15;
+  transform: translateX(-50%);
+}
+
+@keyframes emptyPulse {
+  0%, 100% { opacity: 0.15; transform: translateX(-50%) scale(1); }
+  50% { opacity: 0.3; transform: translateX(-50%) scale(1.1); }
+}
+
+.staging-area {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.staging-icon {
+  font-size: 3rem;
+  animation: stagingBounce 2s ease-in-out infinite;
+}
+
+@keyframes stagingBounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.staging-ring {
+  position: absolute;
+  width: 100px;
+  height: 100px;
+  border: 2px solid var(--color-staging);
+  border-radius: 50%;
+  opacity: 0.3;
+  animation: stagingRing 2s ease-out infinite;
+}
+
+@keyframes stagingRing {
+  0% { transform: scale(0.8); opacity: 0.5; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+.empty-content h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 0.5rem 0;
+}
+
+.empty-content p {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.7;
+  margin: 0;
+  max-width: 360px;
+}
+
+.empty-content code {
+  padding: 3px 10px;
+  background: rgba(167, 139, 250, 0.15);
+  border: 1px solid rgba(167, 139, 250, 0.2);
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85em;
+  color: var(--color-commit);
+}
+
+/* SVG Styles */
+.svg {
+  display: block;
+}
+
+/* Lane indicators */
+.lane-line {
+  stroke-dasharray: 6, 6;
   opacity: 0.5;
 }
 
-.pulse-animation {
-  animation: pulse 2s ease-in-out infinite;
+.lane-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.7;
 }
 
-.empty-text {
-  color: var(--text-secondary);
-  font-size: 0.95rem;
-  line-height: 1.6;
-  margin: 0;
-}
-
-.empty-text code {
-  padding: 2px 8px;
-  background: rgba(167, 139, 250, 0.15);
-  border-radius: 4px;
-  color: var(--color-commit);
-  font-size: 0.85em;
-}
-
-.svg {
-  display: block;
+/* Time indicator */
+.time-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  opacity: 0.5;
 }
 
 /* Edges */
 .edge {
   fill: none;
-  stroke-width: 3;
+  stroke-width: 4;
   stroke-linecap: round;
-  stroke-dasharray: 200;
-  stroke-dashoffset: 0;
-  animation: edgeDraw 0.8s ease-out forwards;
+  opacity: 0;
+  animation: edgeAppear 0.8s ease-out forwards;
+}
+
+.edge--active {
+  stroke-width: 5;
 }
 
 .edge--merge {
-  stroke-dasharray: 8, 4;
-  animation: edgeDraw 0.8s ease-out forwards, dashMove 20s linear infinite;
+  stroke-dasharray: 12, 6;
+  animation: edgeAppear 0.8s ease-out forwards, dashFlow 15s linear infinite;
 }
 
-@keyframes dashMove {
-  to {
-    stroke-dashoffset: -100;
+@keyframes edgeAppear {
+  0% {
+    opacity: 0;
+    stroke-dasharray: 0, 1000;
+  }
+  100% {
+    opacity: 1;
+    stroke-dasharray: 1000, 0;
   }
 }
 
-/* Commit nodes */
-.commit {
-  animation: nodeAppear 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) var(--delay, 0s) both;
-}
-
-.node-glow {
-  fill: var(--color-commit);
-  opacity: 0;
-  transition: opacity 0.3s ease;
-}
-
-.node-glow--merge {
-  fill: var(--color-merge);
-}
-
-.commit:hover .node-glow {
-  opacity: 0.2;
-}
-
-.node {
-  filter: drop-shadow(0 2px 8px rgba(167, 139, 250, 0.3));
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.3s ease;
-  cursor: pointer;
-}
-
-.node--merge {
-  filter: drop-shadow(0 2px 8px rgba(244, 114, 182, 0.3));
-}
-
-.node--head {
-  filter: drop-shadow(0 0 12px var(--color-head));
-}
-
-.commit:hover .node {
-  transform: scale(1.1);
-  filter: drop-shadow(0 4px 16px rgba(167, 139, 250, 0.5));
-}
-
-.node-highlight {
-  fill: rgba(255, 255, 255, 0.4);
-  pointer-events: none;
-}
-
-.commit-id {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  fill: var(--text-muted);
-  opacity: 0;
-  transition: opacity 0.3s ease;
-}
-
-.commit:hover .commit-id {
-  opacity: 1;
-}
-
-.commit-message {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
-  fill: var(--text-secondary);
-  transition: fill 0.3s ease;
-}
-
-.commit:hover .commit-message {
-  fill: var(--text-primary);
-}
-
-/* Branch labels */
-.branch-label {
-  animation: slideInRight 0.4s ease-out both;
-}
-
-.branch-tag {
-  fill: var(--color-branch);
-  opacity: 0.2;
-  transition: opacity 0.3s ease;
-}
-
-.branch-label:hover .branch-tag {
-  opacity: 0.3;
-}
-
-.branch-label--active .branch-tag {
-  opacity: 0.3;
-  stroke: var(--color-branch);
-  stroke-width: 2;
-}
-
-.branch-name {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  font-weight: 600;
-  fill: var(--color-branch);
+@keyframes dashFlow {
+  to {
+    stroke-dashoffset: -100;
+  }
 }
 
 /* HEAD indicator */
@@ -549,29 +795,197 @@ const getCommitDelay = (index: number) => `${index * 0.1}s`;
 }
 
 .head-ring--outer {
+  stroke-width: 1;
+  opacity: 0.15;
+  animation: headRingPulse 2.5s ease-in-out infinite;
+}
+
+.head-ring--middle {
   stroke-width: 2;
-  opacity: 0.2;
-  animation: headPulse 2s ease-in-out infinite;
+  opacity: 0.25;
+  animation: headRingPulse 2.5s ease-in-out infinite 0.3s;
 }
 
 .head-ring--inner {
   stroke-width: 3;
   opacity: 0.4;
-  animation: headPulse 2s ease-in-out infinite 0.3s;
+  animation: headRingPulse 2.5s ease-in-out infinite 0.6s;
 }
 
-@keyframes headPulse {
-  0%, 100% {
-    transform-origin: center;
-    opacity: 0.2;
+@keyframes headRingPulse {
+  0%, 100% { opacity: 0.15; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(1.05); }
+}
+
+/* Commit nodes */
+.commit {
+  animation: commitAppear 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) var(--delay, 0s) both;
+}
+
+@keyframes commitAppear {
+  0% {
+    opacity: 0;
+    transform: scale(0) translateY(20px);
   }
-  50% {
-    opacity: 0.5;
+  60% {
+    transform: scale(1.15) translateY(0);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
   }
 }
 
+.node-glow {
+  fill: var(--color-commit);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.node-glow--merge {
+  fill: var(--color-merge);
+}
+
+.commit:hover .node-glow {
+  opacity: 0.25;
+}
+
+.node {
+  stroke: rgba(255, 255, 255, 0.2);
+  stroke-width: 2;
+  cursor: pointer;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), stroke-width 0.3s ease;
+}
+
+.node--merge {
+  stroke: rgba(244, 114, 182, 0.3);
+}
+
+.node--head {
+  stroke: var(--color-head);
+  stroke-width: 3;
+}
+
+.commit:hover .node {
+  transform: scale(1.1);
+  stroke-width: 3;
+}
+
+.node-highlight {
+  fill: rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+}
+
+.node-icon {
+  font-size: 14px;
+  fill: rgba(255, 255, 255, 0.9);
+  pointer-events: none;
+}
+
+/* Commit labels */
+.commit-label {
+  opacity: 0.9;
+  transition: opacity 0.3s ease;
+}
+
+.commit:hover .commit-label {
+  opacity: 1;
+}
+
+.commit-label-bg {
+  fill: rgba(0, 0, 0, 0.6);
+  stroke: var(--border-color);
+  stroke-width: 1;
+}
+
+.commit-message {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  fill: var(--text-primary);
+}
+
+/* Commit ID badge */
+.commit-id-badge {
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.commit:hover .commit-id-badge {
+  opacity: 1;
+}
+
+.id-badge-bg {
+  fill: rgba(167, 139, 250, 0.2);
+  stroke: rgba(167, 139, 250, 0.3);
+  stroke-width: 1;
+}
+
+.commit-id {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  fill: var(--color-commit);
+}
+
+/* Branch pointers */
+.branch-pointer {
+  animation: branchAppear 0.4s ease-out both;
+}
+
+@keyframes branchAppear {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.branch-line {
+  stroke: var(--color-branch);
+  stroke-width: 2;
+  opacity: 0.6;
+}
+
+.branch-tag {
+  fill: var(--color-branch);
+  opacity: 0.2;
+  transition: opacity 0.3s ease;
+}
+
+.branch-pointer:hover .branch-tag {
+  opacity: 0.35;
+}
+
+.branch-pointer--active .branch-tag {
+  opacity: 0.35;
+  stroke: var(--color-branch);
+  stroke-width: 2;
+}
+
+.branch-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  fill: var(--color-branch);
+}
+
+/* HEAD label */
 .head-label {
-  animation: fadeInUp 0.4s ease-out 0.2s both;
+  animation: headLabelAppear 0.5s ease-out 0.3s both;
+}
+
+@keyframes headLabelAppear {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .head-tag {
@@ -581,8 +995,52 @@ const getCommitDelay = (index: number) => `${index * 0.1}s`;
 
 .head-text {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   fill: var(--color-head);
+}
+
+/* Footer legend */
+.graph__footer {
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.mini-legend {
+  display: flex;
+  justify-content: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.mini-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.mini-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.mini-dot--commit {
+  background: var(--color-commit);
+}
+
+.mini-dot--merge {
+  background: var(--color-merge);
+}
+
+.mini-dot--branch {
+  background: var(--color-branch);
+}
+
+.mini-dot--head {
+  background: var(--color-head);
+  box-shadow: 0 0 6px var(--color-head);
 }
 </style>
