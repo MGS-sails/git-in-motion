@@ -22,7 +22,11 @@ function onRun(line: string) {
   lines.push({ kind: "in", text: line, id: lineId++ });
   lastCommand.value = line;
   const res = runCommand(state, line);
-  if (!res.ok) lines.push({ kind: "err", text: res.error, id: lineId++ });
+  if (!res.ok) {
+    lines.push({ kind: "err", text: res.error, id: lineId++ });
+  } else if (res.message) {
+    lines.push({ kind: "out", text: res.message, id: lineId++ });
+  }
 }
 </script>
 

@@ -103,7 +103,9 @@ Line 10: Master version control`
     conflicts: [],
 });
 
-export type CommandResult = { ok: true } | { ok: false; error: string };
+export type CommandResult =
+  | { ok: true; message?: string }
+  | { ok: false; error: string };
 
 export function runCommand(state: RepoState, raw: string): CommandResult {
     const line = raw.trim();
@@ -311,8 +313,9 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             const branchList = Object.keys(state.branches).map(b =>
                 b === state.activeBranch ? `* ${b}` : `  ${b}`
             ).join("\n");
-            state.explanation = `Current branches:\n${branchList}\n\nThe * marks your current branch. Create a new one with \`git branch <name>\`.`;
-            return { ok: true };
+            const output = `Current branches:\n${branchList}\n\nThe * marks your current branch. Create a new one with \`git branch <name>\`.`;
+            state.explanation = output;
+            return { ok: true, message: branchList };
         }
 
         if (state.branches[name]) {
@@ -933,11 +936,12 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
         if (subCmd === "list") {
             if (state.stash.length === 0) {
                 state.explanation = "Stash is empty.";
+                return { ok: true, message: "Stash is empty" };
             } else {
                 const list = state.stash.map((s, i) => `stash@{${i}}: ${s.message}`).join("\n");
                 state.explanation = `Stash list:\n${list}\n\nUse \`git stash pop\` to restore the latest, or \`git stash drop\` to remove it.`;
+                return { ok: true, message: list };
             }
-            return { ok: true };
         }
 
         if (subCmd === "drop") {
@@ -967,6 +971,7 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
         const count = state.commits.length;
         if (count === 0) {
             state.explanation = "No commits yet! The log is empty.";
+            return { ok: true, message: "No commits yet" };
         } else {
             const rebaseCount = state.commits.filter(c => c.isRebase).length;
             const revertCount = state.commits.filter(c => c.isRevert).length;
@@ -979,9 +984,10 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             if (revertCount) details += `, ${revertCount} revert(s)`;
             if (cherryCount) details += `, ${cherryCount} cherry-pick(s)`;
 
-            state.explanation = `📜 ${details}. The graph shows your project's history — each node is a commit, lines show parent relationships.`;
+            const output = `📜 ${details}`;
+            state.explanation = `${output}. The graph shows your project's history — each node is a commit, lines show parent relationships.`;
+            return { ok: true, message: output };
         }
-        return { ok: true };
     }
 
     // === git status ===
@@ -1033,8 +1039,9 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             ? `\n📦 ${state.stash.length} stash entry(ies)`
             : "";
 
-        state.explanation = `${branchInfo}${fileInfo}${stashInfo}`;
-        return { ok: true };
+        const output = `${branchInfo}${fileInfo}${stashInfo}`;
+        state.explanation = output;
+        return { ok: true, message: output };
     }
 
     // === git diff ===
@@ -1064,9 +1071,13 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             }
 
             if (workingFile.content === headContent) {
-                state.explanation = `No changes in ${target}.`;
+                const msg = `No changes in ${target}.`;
+                state.explanation = msg;
+                return { ok: true, message: msg };
             } else {
-                state.explanation = `📝 ${target} has been modified since the last commit. Check the file viewer to see changes.`;
+                const msg = `📝 ${target} has been modified since the last commit. Check the file viewer to see changes.`;
+                state.explanation = msg;
+                return { ok: true, message: msg };
             }
         } else {
             // Show all modified files
@@ -1079,13 +1090,15 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             }
 
             if (modified.length === 0) {
-                state.explanation = "No changes since last commit.";
+                const msg = "No changes since last commit.";
+                state.explanation = msg;
+                return { ok: true, message: msg };
             } else {
-                state.explanation = `📝 ${modified.length} file(s) modified:\n${modified.map(p => `  - ${p}`).join("\n")}\n\nUse \`git diff <file>\` to see changes in a specific file.`;
+                const msg = `📝 ${modified.length} file(s) modified:\n${modified.map(p => `  - ${p}`).join("\n")}`;
+                state.explanation = `${msg}\n\nUse \`git diff <file>\` to see changes in a specific file.`;
+                return { ok: true, message: msg };
             }
         }
-
-        return { ok: true };
     }
 
     // === Unknown command ===
