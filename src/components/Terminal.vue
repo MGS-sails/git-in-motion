@@ -12,15 +12,33 @@ const input = ref("");
 const screenRef = ref<HTMLElement | null>(null);
 
 const quickCommands = computed(() => {
-  const base = [
-    { cmd: "git init", label: "init", icon: "⚡", available: !props.state.initialized },
-    { cmd: "git add .", label: "add", icon: "📦", available: props.state.initialized },
-    { cmd: 'git commit -m "update"', label: "commit", icon: "💾", available: props.state.initialized && props.state.stagingCount > 0 },
-    { cmd: "git branch feature", label: "branch", icon: "🌿", available: props.state.initialized && props.state.commits.length > 0 },
-    { cmd: "git switch", label: "switch", icon: "🔀", available: props.state.initialized && Object.keys(props.state.branches).length > 1 },
-    { cmd: "git merge", label: "merge", icon: "🔗", available: props.state.initialized && Object.keys(props.state.branches).length > 1 },
+  const hasBranches = Object.keys(props.state.branches).length > 1;
+  const hasCommits = props.state.commits.length > 0;
+  const hasMultipleCommits = props.state.commits.length > 1;
+
+  return [
+    // Row 1: Basics
+    { cmd: "git init", label: "init", icon: "⚡", available: !props.state.initialized, group: "basic" },
+    { cmd: "git add .", label: "add", icon: "📦", available: props.state.initialized, group: "basic" },
+    { cmd: 'git commit -m "update"', label: "commit", icon: "💾", available: props.state.initialized && props.state.stagingCount > 0, group: "basic" },
+
+    // Row 2: Branching
+    { cmd: "git branch feature", label: "branch", icon: "🌿", available: props.state.initialized && hasCommits, group: "branch" },
+    { cmd: "git switch", label: "switch", icon: "🔀", available: props.state.initialized && hasBranches, group: "branch" },
+    { cmd: "git merge", label: "merge", icon: "🔗", available: props.state.initialized && hasBranches, group: "branch" },
+
+    // Row 3: Advanced
+    { cmd: "git rebase", label: "rebase", icon: "↻", available: props.state.initialized && hasBranches, group: "advanced" },
+    { cmd: "git reset --soft HEAD~1", label: "reset", icon: "⏪", available: props.state.initialized && hasMultipleCommits, group: "advanced" },
+    { cmd: "git revert", label: "revert", icon: "↩️", available: props.state.initialized && hasCommits, group: "advanced" },
+    { cmd: "git cherry-pick", label: "cherry", icon: "🍒", available: props.state.initialized && hasMultipleCommits, group: "advanced" },
+
+    // Row 4: Utility
+    { cmd: "git stash", label: "stash", icon: "📥", available: props.state.initialized && props.state.stagingCount > 0, group: "util" },
+    { cmd: "git stash pop", label: "pop", icon: "📤", available: props.state.initialized && props.state.stash.length > 0, group: "util" },
+    { cmd: "git status", label: "status", icon: "📊", available: props.state.initialized, group: "util" },
+    { cmd: "git log", label: "log", icon: "📜", available: props.state.initialized && hasCommits, group: "util" },
   ];
-  return base;
 });
 
 function submit() {
@@ -113,13 +131,32 @@ watch(() => props.lines.length, async () => {
 
     <div class="hints">
       <div class="hints__title">Available commands:</div>
-      <div class="hints__list">
-        <code class="hint-cmd">git init</code>
-        <code class="hint-cmd">git add .</code>
-        <code class="hint-cmd">git commit -m "msg"</code>
-        <code class="hint-cmd">git branch &lt;name&gt;</code>
-        <code class="hint-cmd">git switch &lt;name&gt;</code>
-        <code class="hint-cmd">git merge &lt;branch&gt;</code>
+      <div class="hints__grid">
+        <div class="hints__group">
+          <span class="hints__group-title">Basics</span>
+          <code class="hint-cmd">git init</code>
+          <code class="hint-cmd">git add .</code>
+          <code class="hint-cmd">git commit -m "msg"</code>
+        </div>
+        <div class="hints__group">
+          <span class="hints__group-title">Branches</span>
+          <code class="hint-cmd">git branch &lt;name&gt;</code>
+          <code class="hint-cmd">git switch &lt;name&gt;</code>
+          <code class="hint-cmd">git merge &lt;branch&gt;</code>
+        </div>
+        <div class="hints__group">
+          <span class="hints__group-title">History</span>
+          <code class="hint-cmd">git rebase &lt;branch&gt;</code>
+          <code class="hint-cmd">git reset --soft/--hard</code>
+          <code class="hint-cmd">git revert &lt;commit&gt;</code>
+          <code class="hint-cmd">git cherry-pick &lt;commit&gt;</code>
+        </div>
+        <div class="hints__group">
+          <span class="hints__group-title">Utility</span>
+          <code class="hint-cmd">git stash / pop / list</code>
+          <code class="hint-cmd">git status</code>
+          <code class="hint-cmd">git log</code>
+        </div>
       </div>
     </div>
   </div>
@@ -386,25 +423,40 @@ watch(() => props.lines.length, async () => {
 }
 
 .hints__title {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: var(--text-muted);
-  margin-bottom: 8px;
+  margin-bottom: 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
-.hints__list {
+.hints__grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.hints__group {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hints__group-title {
+  font-size: 0.65rem;
+  color: var(--color-commit);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 2px;
+  font-weight: 600;
 }
 
 .hint-cmd {
-  padding: 4px 10px;
+  padding: 3px 8px;
   background: var(--bg-glass);
   border: 1px solid var(--border-color);
-  border-radius: 6px;
-  font-size: 0.75rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
   color: var(--text-secondary);
   transition: all 0.2s ease;
   cursor: default;

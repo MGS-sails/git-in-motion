@@ -43,14 +43,52 @@ const pos = (x: number, y: number) => {
   return { cx, cy };
 };
 
+// Get all commits reachable from branch heads
+const reachableCommits = computed(() => {
+  const reachable = new Set<string>();
+  const branchHeads = Object.values(props.state.branches)
+    .map(b => b.head)
+    .filter((h): h is string => h !== null);
+
+  // Also include detached HEAD if applicable
+  if (props.state.head?.type === "detached") {
+    branchHeads.push(props.state.head.commit);
+  }
+
+  const stack = [...branchHeads];
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    if (reachable.has(id)) continue;
+    reachable.add(id);
+    const commit = commitById.value.get(id);
+    if (commit) {
+      stack.push(...commit.parents);
+    }
+  }
+  return reachable;
+});
+
+// Check if a commit is orphaned (not reachable from any branch)
+const isOrphaned = (commitId: string) => !reachableCommits.value.has(commitId);
+
 const headPos = computed(() => {
-  if (!props.state.head || props.state.head.type !== "branch") return null;
+  if (!props.state.head) return null;
+
+  // Handle detached HEAD
+  if (props.state.head.type === "detached") {
+    const c = commitById.value.get(props.state.head.commit);
+    if (!c) return null;
+    const p = pos(c.x, c.y);
+    return { ...p, branch: null, detached: true };
+  }
+
+  // Regular branch HEAD
   const b = props.state.branches[props.state.head.name];
   if (!b?.head) return null;
   const c = commitById.value.get(b.head);
   if (!c) return null;
   const p = pos(c.x, c.y);
-  return { ...p, branch: b.name };
+  return { ...p, branch: b.name, detached: false };
 });
 
 // Calculate edge path with smooth bezier curves
@@ -86,6 +124,15 @@ const isHeadCommit = (commitId: string) => {
     return b?.head === commitId;
   }
   return props.state.head.commit === commitId;
+};
+
+// Get commit icon
+const getCommitIcon = (commit: Commit) => {
+  if (commit.isRebase) return "↻";
+  if (commit.isRevert) return "↩";
+  if (commit.isCherryPick) return "🍒";
+  if (commit.parents.length > 1) return "⚭";
+  return "●";
 };
 
 // Get animation delay based on commit index
@@ -291,6 +338,7 @@ const getBranchOffset = (branchIndex: number) => branchIndex * 28;
               class="edge"
               :class="{
                 'edge--merge': pIndex > 0,
+                'edge--orphaned': isOrphaned(c.id),
                 'edge--active': state.activeBranch && state.branches[state.activeBranch]?.lane === c.x
               }"
               :d="getEdgePath(c, pId, pIndex > 0)"
@@ -328,13 +376,24 @@ const getBranchOffset = (branchIndex: number) => branchIndex * 28;
             v-for="(c, index) in state.commits"
             :key="c.id"
             class="commit"
-            :class="{ 'commit--head': isHeadCommit(c.id) }"
+            :class="{
+              'commit--head': isHeadCommit(c.id),
+              'commit--orphaned': isOrphaned(c.id),
+              'commit--rebase': c.isRebase,
+              'commit--revert': c.isRevert,
+              'commit--cherry': c.isCherryPick
+            }"
             :style="{ '--delay': getCommitDelay(index) }"
           >
             <!-- Outer glow ring -->
             <circle
               class="node-glow"
-              :class="{ 'node-glow--merge': isMergeCommit(c) }"
+              :class="{
+                'node-glow--merge': isMergeCommit(c),
+                'node-glow--rebase': c.isRebase,
+                'node-glow--revert': c.isRevert,
+                'node-glow--cherry': c.isCherryPick
+              }"
               :cx="pos(c.x, c.y).cx"
               :cy="pos(c.x, c.y).cy"
               :r="NODE_RADIUS + 8"
@@ -345,7 +404,11 @@ const getBranchOffset = (branchIndex: number) => branchIndex * 28;
               class="node"
               :class="{
                 'node--merge': isMergeCommit(c),
-                'node--head': isHeadCommit(c.id)
+                'node--head': isHeadCommit(c.id),
+                'node--rebase': c.isRebase,
+                'node--revert': c.isRevert,
+                'node--cherry': c.isCherryPick,
+                'node--orphaned': isOrphaned(c.id)
               }"
               :cx="pos(c.x, c.y).cx"
               :cy="pos(c.x, c.y).cy"
@@ -369,8 +432,53 @@ const getBranchOffset = (branchIndex: number) => branchIndex * 28;
               :y="pos(c.x, c.y).cy + 5"
               text-anchor="middle"
             >
-              {{ isMergeCommit(c) ? '⚭' : '●' }}
+              {{ getCommitIcon(c) }}
             </text>
+
+            <!-- Special commit type badge -->
+            <g v-if="c.isRebase || c.isRevert || c.isCherryPick" class="commit-type-badge">
+              <rect
+                class="type-badge-bg"
+                :class="{
+                  'type-badge-bg--rebase': c.isRebase,
+                  'type-badge-bg--revert': c.isRevert,
+                  'type-badge-bg--cherry': c.isCherryPick
+                }"
+                :x="pos(c.x, c.y).cx + NODE_RADIUS - 8"
+                :y="pos(c.x, c.y).cy - NODE_RADIUS - 8"
+                width="20"
+                height="20"
+                rx="10"
+              />
+              <text
+                class="type-badge-icon"
+                :x="pos(c.x, c.y).cx + NODE_RADIUS + 2"
+                :y="pos(c.x, c.y).cy - NODE_RADIUS + 6"
+                text-anchor="middle"
+              >
+                {{ c.isRebase ? '↻' : c.isRevert ? '↩' : '🍒' }}
+              </text>
+            </g>
+
+            <!-- Orphaned indicator -->
+            <g v-if="isOrphaned(c.id)" class="orphaned-badge">
+              <rect
+                class="orphaned-badge-bg"
+                :x="pos(c.x, c.y).cx - NODE_RADIUS - 28"
+                :y="pos(c.x, c.y).cy - 10"
+                width="22"
+                height="20"
+                rx="4"
+              />
+              <text
+                class="orphaned-icon"
+                :x="pos(c.x, c.y).cx - NODE_RADIUS - 17"
+                :y="pos(c.x, c.y).cy + 4"
+                text-anchor="middle"
+              >
+                👻
+              </text>
+            </g>
 
             <!-- Commit message label -->
             <g class="commit-label">
@@ -453,22 +561,24 @@ const getBranchOffset = (branchIndex: number) => branchIndex * 28;
         </g>
 
         <!-- HEAD label -->
-        <g v-if="headPos" class="head-label">
+        <g v-if="headPos" class="head-label" :class="{ 'head-label--detached': headPos.detached }">
           <rect
             class="head-tag"
-            :x="headPos.cx - 32"
+            :class="{ 'head-tag--detached': headPos.detached }"
+            :x="headPos.cx - 40"
             :y="headPos.cy + NODE_RADIUS + 15"
-            width="64"
+            :width="headPos.detached ? 90 : 64"
             height="26"
             rx="13"
           />
           <text
             class="head-text"
-            :x="headPos.cx"
+            :class="{ 'head-text--detached': headPos.detached }"
+            :x="headPos.cx + 5"
             :y="headPos.cy + NODE_RADIUS + 33"
             text-anchor="middle"
           >
-            HEAD
+            {{ headPos.detached ? '⚠️ DETACHED' : 'HEAD' }}
           </text>
         </g>
       </svg>
@@ -486,12 +596,20 @@ const getBranchOffset = (branchIndex: number) => branchIndex * 28;
           <span>Merge</span>
         </div>
         <div class="mini-legend-item">
-          <span class="mini-dot mini-dot--branch"></span>
-          <span>Branch</span>
+          <span class="mini-dot mini-dot--rebase"></span>
+          <span>Rebase</span>
         </div>
         <div class="mini-legend-item">
-          <span class="mini-dot mini-dot--head"></span>
-          <span>HEAD</span>
+          <span class="mini-dot mini-dot--revert"></span>
+          <span>Revert</span>
+        </div>
+        <div class="mini-legend-item">
+          <span class="mini-dot mini-dot--cherry"></span>
+          <span>Cherry-pick</span>
+        </div>
+        <div class="mini-legend-item">
+          <span class="mini-dot mini-dot--orphan"></span>
+          <span>Orphaned</span>
         </div>
       </div>
     </div>
@@ -1042,5 +1160,137 @@ const getBranchOffset = (branchIndex: number) => branchIndex * 28;
 .mini-dot--head {
   background: var(--color-head);
   box-shadow: 0 0 6px var(--color-head);
+}
+
+.mini-dot--rebase {
+  background: #22d3ee;
+}
+
+.mini-dot--revert {
+  background: #fb923c;
+}
+
+.mini-dot--cherry {
+  background: #f43f5e;
+}
+
+.mini-dot--orphan {
+  background: #6b7280;
+  opacity: 0.5;
+}
+
+/* Special commit type styles */
+.commit--orphaned {
+  opacity: 0.4;
+}
+
+.commit--orphaned .node {
+  stroke-dasharray: 4, 2;
+}
+
+.node--rebase {
+  stroke: #22d3ee !important;
+  stroke-width: 3;
+}
+
+.node--revert {
+  stroke: #fb923c !important;
+  stroke-width: 3;
+}
+
+.node--cherry {
+  stroke: #f43f5e !important;
+  stroke-width: 3;
+}
+
+.node--orphaned {
+  opacity: 0.5;
+  stroke-dasharray: 4, 2;
+}
+
+.node-glow--rebase {
+  fill: #22d3ee;
+}
+
+.node-glow--revert {
+  fill: #fb923c;
+}
+
+.node-glow--cherry {
+  fill: #f43f5e;
+}
+
+.edge--orphaned {
+  opacity: 0.2;
+  stroke-dasharray: 4, 4;
+}
+
+/* Type badge */
+.commit-type-badge {
+  animation: badgePop 0.3s ease-out;
+}
+
+@keyframes badgePop {
+  0% { transform: scale(0); }
+  70% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+
+.type-badge-bg {
+  fill: var(--color-commit);
+  stroke: rgba(255, 255, 255, 0.3);
+  stroke-width: 1;
+}
+
+.type-badge-bg--rebase {
+  fill: #22d3ee;
+}
+
+.type-badge-bg--revert {
+  fill: #fb923c;
+}
+
+.type-badge-bg--cherry {
+  fill: #f43f5e;
+}
+
+.type-badge-icon {
+  font-size: 10px;
+  fill: white;
+}
+
+/* Orphaned badge */
+.orphaned-badge {
+  animation: fadeIn 0.5s ease-out;
+}
+
+.orphaned-badge-bg {
+  fill: rgba(107, 114, 128, 0.3);
+  stroke: rgba(107, 114, 128, 0.5);
+  stroke-width: 1;
+}
+
+.orphaned-icon {
+  font-size: 12px;
+}
+
+/* Detached HEAD styles */
+.head-tag--detached {
+  fill: #ef4444;
+  animation: detachedPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes detachedPulse {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 0.5; }
+}
+
+.head-text--detached {
+  fill: #ef4444;
+  font-size: 10px;
+}
+
+.head-label--detached .head-ring {
+  stroke: #ef4444;
 }
 </style>
