@@ -84,6 +84,43 @@ export const makeInitialState = (): RepoState => ({
     head: null,
     activeBranch: null,
     explanation: "Type a command like `git init` to begin your Git journey! Watch how the graph changes as you work.",
+    workingDirectory: [
+        {
+            path: "main.py",
+            content: `# Main application
+def main():
+    print("Hello, Git!")
+    print("Welcome to version control")
+
+if __name__ == "__main__":
+    main()
+`
+        },
+        {
+            path: "utils.py",
+            content: `# Utility functions
+def format_message(msg):
+    return f"[INFO] {msg}"
+
+def validate_input(data):
+    return data is not None and len(data) > 0
+`
+        },
+        {
+            path: "README.md",
+            content: `# Git in Motion Project
+
+A visual learning tool for understanding Git concepts.
+
+## Features
+- Interactive Git commands
+- Real-time graph visualization
+- Educational explanations
+`
+        }
+    ],
+    stagingArea: [],
+    conflicts: [],
 });
 
 export type CommandResult = { ok: true } | { ok: false; error: string };
@@ -125,13 +162,74 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
 
     // === git add ===
     if (cmd === "add") {
-        state.stagingCount = Math.max(1, state.stagingCount + 1);
-        state.explanation = "📦 `git add` moves changes into the **staging area** — think of it as a loading dock where you prepare what goes into your next commit. Only staged changes become part of the commit.";
+        const target = parts[2];
+
+        if (!target) {
+            state.explanation = "Specify what to add: `git add <file>` or `git add .` for all files.";
+            return { ok: false, error: "Specify file or ." };
+        }
+
+        if (target === ".") {
+            // Add all files from working directory
+            state.stagingArea = state.workingDirectory.map(f => ({
+                path: f.path,
+                content: f.content,
+                // Don't copy isConflicted flag to staging
+            }));
+            state.stagingCount = state.stagingArea.length;
+
+            // Clear conflicts for added files
+            const addedPaths = state.stagingArea.map(f => f.path);
+            state.conflicts = state.conflicts.filter(c => !addedPaths.includes(c.path));
+
+            if (state.conflicts.length === 0) {
+                state.explanation = `📦 \`git add .\` staged all ${state.stagingArea.length} file(s)! All conflicts resolved. Ready to commit.`;
+            } else {
+                state.explanation = `📦 \`git add .\` staged all ${state.stagingArea.length} file(s)! The staging area is like a loading dock where you prepare what goes into your next commit. Only staged changes become part of the commit.`;
+            }
+        } else {
+            // Add specific file
+            const file = state.workingDirectory.find(f => f.path === target);
+            if (!file) {
+                state.explanation = `File "${target}" not found. Available files: ${state.workingDirectory.map(f => f.path).join(", ")}`;
+                return { ok: false, error: `File not found: ${target}` };
+            }
+
+            // Remove from staging if already there, then add fresh copy
+            state.stagingArea = state.stagingArea.filter(f => f.path !== target);
+            state.stagingArea.push({
+                path: file.path,
+                content: file.content,
+                // Don't copy isConflicted flag to staging
+            });
+            state.stagingCount = state.stagingArea.length;
+
+            // Remove this file from conflicts if it was conflicted
+            const wasConflicted = state.conflicts.some(c => c.path === target);
+            state.conflicts = state.conflicts.filter(c => c.path !== target);
+
+            if (wasConflicted) {
+                if (state.conflicts.length === 0) {
+                    state.explanation = `📦 \`git add ${target}\` staged! All conflicts resolved. Ready to commit with \`git commit -m "message"\`.`;
+                } else {
+                    state.explanation = `📦 \`git add ${target}\` staged! Conflict resolved for this file. ${state.conflicts.length} file(s) still have conflicts.`;
+                }
+            } else {
+                state.explanation = `📦 \`git add ${target}\` staged! The file is now in the staging area, ready to be committed.`;
+            }
+        }
+
         return { ok: true };
     }
 
     // === git commit ===
     if (cmd === "commit") {
+        // Check for unresolved conflicts
+        if (state.conflicts.length > 0) {
+            state.explanation = `⚠️ Cannot commit with unresolved conflicts! ${state.conflicts.length} file(s) still have conflicts:\n${state.conflicts.map(c => `  - ${c.path}`).join("\n")}\n\nResolve them in the File Viewer, then \`git add\` the resolved files.`;
+            return { ok: false, error: "Unresolved conflicts" };
+        }
+
         if (state.stagingCount === 0) {
             state.explanation = "Nothing to commit! Use `git add .` first to stage some changes. Git won't let you create empty commits (by default).";
             return { ok: false, error: "Nothing staged — use 'git add .' first" };
@@ -146,6 +244,12 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
         const parent = currentHeadCommit(state);
         const active = state.activeBranch;
 
+        // Store file snapshots
+        const files: Record<string, string> = {};
+        for (const file of state.stagingArea) {
+            files[file.path] = file.content;
+        }
+
         // Handle detached HEAD commit
         if (!active && state.head?.type === "detached") {
             const y = state.commits.length ? Math.max(...state.commits.map((c) => c.y)) + 1 : 0;
@@ -155,10 +259,12 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
                 message,
                 x: 0, // Default lane for detached commits
                 y,
+                files,
             };
             state.commits.push(commit);
             state.head = { type: "detached", commit: commit.id };
             state.stagingCount = 0;
+            state.stagingArea = [];
             state.explanation = `⚠️ Commit created in **detached HEAD** state! This commit isn't on any branch. If you switch branches now, this commit could become "orphaned" and eventually garbage collected. Create a branch with \`git branch <name>\` to save it!`;
             return { ok: true };
         }
@@ -177,12 +283,14 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             message,
             x: lane,
             y,
+            files,
         };
 
         state.commits.push(commit);
         activeBranch.head = commit.id;
         state.head = { type: "branch", name: active };
         state.stagingCount = 0;
+        state.stagingArea = [];
 
         const isFirst = state.commits.length === 1;
         if (isFirst) {
@@ -253,6 +361,15 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             if (commit) {
                 state.head = { type: "detached", commit: commit.id };
                 state.activeBranch = null;
+
+                // Update working directory to match commit
+                if (commit.files) {
+                    state.workingDirectory = Object.entries(commit.files).map(([path, content]) => ({
+                        path,
+                        content,
+                    }));
+                }
+
                 state.explanation = `⚠️ **Detached HEAD** state! You're now directly on commit \`${commit.id}\`, not on any branch. HEAD normally points to a branch, which points to a commit. Now HEAD points directly to a commit. Any new commits here won't belong to a branch!`;
                 return { ok: true };
             }
@@ -275,6 +392,15 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             if (commit) {
                 state.head = { type: "detached", commit: commit.id };
                 state.activeBranch = null;
+
+                // Update working directory to match commit
+                if (commit.files) {
+                    state.workingDirectory = Object.entries(commit.files).map(([path, content]) => ({
+                        path,
+                        content,
+                    }));
+                }
+
                 state.explanation = `⚠️ **Detached HEAD**! You checked out commit \`${commit.id}\` directly. You're not on any branch now.`;
                 return { ok: true };
             }
@@ -289,13 +415,54 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
 
         state.head = { type: "branch", name };
         state.activeBranch = name;
+
+        // Update working directory to match branch's HEAD commit
+        const branch = state.branches[name];
+        if (branch?.head) {
+            const commit = state.commits.find(c => c.id === branch.head);
+            if (commit?.files) {
+                state.workingDirectory = Object.entries(commit.files).map(([path, content]) => ({
+                    path,
+                    content,
+                }));
+            }
+        }
+
         state.explanation = `🔀 Switched to "${name}"! HEAD now points to the \`${name}\` branch. Notice: the commits didn't move — switching branches just changes which branch HEAD points to. It's like changing which bookmark you're looking at.`;
         return { ok: true };
     }
 
     // === git merge ===
     if (cmd === "merge") {
-        const other = parts[2];
+        const flag = parts[2];
+
+        // git merge --abort
+        if (flag === "--abort") {
+            if (state.conflicts.length === 0) {
+                state.explanation = "No merge in progress.";
+                return { ok: false, error: "No merge to abort" };
+            }
+
+            // Clear conflicts
+            state.conflicts = [];
+
+            // Restore working directory to HEAD
+            const headCommit = currentHeadCommit(state);
+            if (headCommit) {
+                const commit = state.commits.find(c => c.id === headCommit);
+                if (commit?.files) {
+                    state.workingDirectory = Object.entries(commit.files).map(([path, content]) => ({
+                        path,
+                        content,
+                    }));
+                }
+            }
+
+            state.explanation = "🚫 Merge aborted. Working directory restored to HEAD state.";
+            return { ok: true };
+        }
+
+        const other = flag;
         const active = state.activeBranch;
 
         if (!other) {
@@ -350,11 +517,76 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
         if (bAncestry.has(aHead)) {
             // Fast-forward merge!
             activeBranch.head = bHead;
+
+            // Update working directory to match merged commit
+            const mergedCommit = state.commits.find(c => c.id === bHead);
+            if (mergedCommit?.files) {
+                state.workingDirectory = Object.entries(mergedCommit.files).map(([path, content]) => ({
+                    path,
+                    content,
+                }));
+            }
+
             state.explanation = `⚡ **Fast-forward merge!** Since \`${active}\` was an ancestor of \`${other}\`, Git just moved the \`${active}\` pointer forward. No merge commit needed! This is the cleanest type of merge — it's like the branch never diverged.`;
             return { ok: true };
         }
 
-        // Regular merge - create merge commit
+        // Regular merge - check for conflicts
+        const aCommit = state.commits.find(c => c.id === aHead);
+        const bCommit = state.commits.find(c => c.id === bHead);
+
+        if (!aCommit?.files || !bCommit?.files) {
+            state.explanation = "Cannot merge — commits missing file information.";
+            return { ok: false, error: "Missing file data" };
+        }
+
+        // Detect conflicts
+        const conflicts: typeof state.conflicts = [];
+        const mergedFiles: Record<string, string> = {};
+
+        // Get all file paths from both commits
+        const allPaths = new Set([...Object.keys(aCommit.files), ...Object.keys(bCommit.files)]);
+
+        for (const path of allPaths) {
+            const aContent = aCommit.files[path];
+            const bContent = bCommit.files[path];
+
+            if (aContent === undefined) {
+                // File only in other branch
+                mergedFiles[path] = bContent!;
+            } else if (bContent === undefined) {
+                // File only in current branch
+                mergedFiles[path] = aContent;
+            } else if (aContent === bContent) {
+                // Same content
+                mergedFiles[path] = aContent;
+            } else {
+                // CONFLICT!
+                conflicts.push({
+                    path,
+                    ours: aContent,
+                    theirs: bContent,
+                });
+
+                // Create conflict markers in file
+                mergedFiles[path] = `<<<<<<< HEAD (${active})\n${aContent}\n=======\n${bContent}\n>>>>>>> ${other}\n`;
+            }
+        }
+
+        if (conflicts.length > 0) {
+            // Merge has conflicts
+            state.conflicts = conflicts;
+            state.workingDirectory = Object.entries(mergedFiles).map(([path, content]) => ({
+                path,
+                content,
+                isConflicted: conflicts.some(c => c.path === path),
+            }));
+
+            state.explanation = `⚠️ **Merge conflict!** ${conflicts.length} file(s) have conflicts:\n${conflicts.map(c => `  - ${c.path}`).join("\n")}\n\nResolve conflicts in the File Viewer, then \`git add\` and \`git commit\` to complete the merge. Or use \`git merge --abort\` to cancel.`;
+            return { ok: false, error: "Merge conflicts" };
+        }
+
+        // No conflicts - create merge commit
         const lane = activeBranch.lane;
         const y = Math.max(...state.commits.map((c) => c.y)) + 1;
 
@@ -364,10 +596,18 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             message: `Merge ${other} → ${active}`,
             x: lane,
             y,
+            files: mergedFiles,
         };
 
         state.commits.push(mergeCommit);
         activeBranch.head = mergeCommit.id;
+
+        // Update working directory
+        state.workingDirectory = Object.entries(mergedFiles).map(([path, content]) => ({
+            path,
+            content,
+        }));
+
         state.explanation = `🔗 **Merge commit created!** This commit has TWO parents — one from \`${active}\` and one from \`${other}\`. The merge commit records the point where two lines of development joined. Both histories are preserved!`;
         return { ok: true };
     }
@@ -442,6 +682,7 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
                 y: y++,
                 isRebase: true,
                 originalId: oldCommit.id,
+                files: oldCommit.files, // Copy files from original commit
             };
             newCommits.push(newCommit);
             state.commits.push(newCommit);
@@ -451,6 +692,15 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
         // Move branch pointer to new tip
         activeBranch.head = currentParent;
         activeBranch.lane = ontoLane; // Move branch to same lane
+
+        // Update working directory to match new tip
+        const newTip = state.commits.find(c => c.id === currentParent);
+        if (newTip?.files) {
+            state.workingDirectory = Object.entries(newTip.files).map(([path, content]) => ({
+                path,
+                content,
+            }));
+        }
 
         state.explanation = `🔄 **Rebase complete!** ${commitsToReplay.length} commit(s) were "replayed" on top of \`${onto}\`. The old commits still exist but are now orphaned (shown faded). Notice: same changes, NEW commit hashes! Rebase rewrites history — the commits are technically different objects. This creates a linear history without merge commits.`;
         return { ok: true };
@@ -537,10 +787,21 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
         } else if (mode === "mixed") {
             // Clear staging area
             state.stagingCount = 0;
+            state.stagingArea = [];
             state.explanation = `⏪ **Mixed reset** (default) to \`${targetCommit.id}\`! The branch pointer moved back AND the staging area was cleared. The changes from undone commits are still in your working directory, just unstaged. Use this to redo your staging.`;
         } else {
             // Hard reset - clear everything
             state.stagingCount = 0;
+            state.stagingArea = [];
+
+            // Update working directory to match target commit
+            if (targetCommit.files) {
+                state.workingDirectory = Object.entries(targetCommit.files).map(([path, content]) => ({
+                    path,
+                    content,
+                }));
+            }
+
             state.explanation = `⚠️ **Hard reset** to \`${targetCommit.id}\`! The branch pointer moved back, staging area cleared, AND working directory changes discarded. This is DANGEROUS — those changes are gone! Use this only when you want to truly abandon work.`;
         }
         return { ok: true };
@@ -624,10 +885,19 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             y,
             isCherryPick: true,
             originalId: targetCommit.id,
+            files: targetCommit.files, // Copy files from target commit
         };
 
         state.commits.push(cherryCommit);
         activeBranch.head = cherryCommit.id;
+
+        // Update working directory to match cherry-picked commit
+        if (cherryCommit.files) {
+            state.workingDirectory = Object.entries(cherryCommit.files).map(([path, content]) => ({
+                path,
+                content,
+            }));
+        }
 
         state.explanation = `🍒 **Cherry-pick complete!** Commit \`${targetCommit.id}\` was copied to \`${active}\` as a NEW commit \`${cherryCommit.id}\`. Same changes, different commit! Cherry-pick lets you selectively apply individual commits from anywhere in your history.`;
         return { ok: true };
@@ -651,10 +921,12 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
                 fromBranch: state.activeBranch || "detached",
                 fromCommit: currentHeadCommit(state),
                 stagingCount: state.stagingCount,
+                files: state.stagingArea.map(f => ({ ...f })),
             };
 
             state.stash.unshift(entry); // Push to front (stack)
             state.stagingCount = 0;
+            state.stagingArea = [];
 
             state.explanation = `📦 **Stashed!** Your staged changes are saved in stash@{0}. The working directory is now clean. Stash is like a clipboard — you can switch branches, do other work, then come back and \`git stash pop\` to restore your changes.`;
             return { ok: true };
@@ -668,6 +940,10 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
 
             const entry = state.stash.shift()!;
             state.stagingCount = entry.stagingCount;
+
+            if (entry.files) {
+                state.stagingArea = entry.files.map(f => ({ ...f }));
+            }
 
             state.explanation = `📤 **Stash popped!** Restored ${entry.stagingCount} staged change(s) from "${entry.message}". The stash entry is removed. Your changes are back in the staging area!`;
             return { ok: true };
@@ -735,19 +1011,103 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
                 ? `HEAD detached at \`${state.head.commit}\``
                 : "No branch";
 
-        const stagingInfo = state.stagingCount > 0
-            ? `\n${state.stagingCount} change(s) staged for commit`
-            : "\nNothing staged";
+        let fileInfo = "";
+
+        // Show conflicts
+        if (state.conflicts.length > 0) {
+            fileInfo += `\n⚠️ ${state.conflicts.length} file(s) with conflicts:\n`;
+            fileInfo += state.conflicts.map(c => `  - ${c.path}`).join("\n");
+        }
+
+        // Show staged files
+        if (state.stagingArea.length > 0) {
+            fileInfo += `\n📦 ${state.stagingArea.length} file(s) staged:\n`;
+            fileInfo += state.stagingArea.map(f => `  - ${f.path}`).join("\n");
+        } else {
+            fileInfo += "\nNothing staged";
+        }
+
+        // Show modified files (compare working directory to HEAD)
+        const headCommit = currentHeadCommit(state);
+        if (headCommit) {
+            const commit = state.commits.find(c => c.id === headCommit);
+            const modified: string[] = [];
+
+            if (commit?.files) {
+                for (const file of state.workingDirectory) {
+                    const headContent = commit.files[file.path];
+                    if (headContent !== undefined && headContent !== file.content) {
+                        modified.push(file.path);
+                    }
+                }
+            }
+
+            if (modified.length > 0) {
+                fileInfo += `\n✏️  ${modified.length} file(s) modified:\n`;
+                fileInfo += modified.map(p => `  - ${p}`).join("\n");
+            }
+        }
 
         const stashInfo = state.stash.length > 0
-            ? `\n${state.stash.length} stash entry(ies)`
+            ? `\n📦 ${state.stash.length} stash entry(ies)`
             : "";
 
-        state.explanation = `${branchInfo}${stagingInfo}${stashInfo}`;
+        state.explanation = `${branchInfo}${fileInfo}${stashInfo}`;
+        return { ok: true };
+    }
+
+    // === git diff ===
+    if (cmd === "diff") {
+        const target = parts[2];
+        const headCommit = currentHeadCommit(state);
+
+        if (!headCommit) {
+            state.explanation = "No commits yet — nothing to diff against.";
+            return { ok: false, error: "No commits" };
+        }
+
+        const commit = state.commits.find(c => c.id === headCommit);
+        if (!commit?.files) {
+            state.explanation = "Current commit has no files.";
+            return { ok: false, error: "No files in commit" };
+        }
+
+        if (target) {
+            // Show diff for specific file
+            const workingFile = state.workingDirectory.find(f => f.path === target);
+            const headContent = commit.files[target];
+
+            if (!workingFile || headContent === undefined) {
+                state.explanation = `File "${target}" not found.`;
+                return { ok: false, error: "File not found" };
+            }
+
+            if (workingFile.content === headContent) {
+                state.explanation = `No changes in ${target}.`;
+            } else {
+                state.explanation = `📝 ${target} has been modified since the last commit. Check the file viewer to see changes.`;
+            }
+        } else {
+            // Show all modified files
+            const modified: string[] = [];
+            for (const file of state.workingDirectory) {
+                const headContent = commit.files[file.path];
+                if (headContent !== undefined && headContent !== file.content) {
+                    modified.push(file.path);
+                }
+            }
+
+            if (modified.length === 0) {
+                state.explanation = "No changes since last commit.";
+            } else {
+                state.explanation = `📝 ${modified.length} file(s) modified:\n${modified.map(p => `  - ${p}`).join("\n")}\n\nUse \`git diff <file>\` to see changes in a specific file.`;
+            }
+        }
+
         return { ok: true };
     }
 
     // === Unknown command ===
-    state.explanation = `Command \`git ${cmd}\` isn't implemented. Available commands:\n• init, add, commit, branch, switch/checkout\n• merge, rebase, reset, revert, cherry-pick\n• stash, log, status`;
+    state.explanation = `Command \`git ${cmd}\` isn't implemented. Available commands:\n• init, add, commit, branch, switch/checkout\n• merge, rebase, reset, revert, cherry-pick\n• stash, log, status, diff`;
     return { ok: false, error: `Unknown: ${cmd}` };
 }
