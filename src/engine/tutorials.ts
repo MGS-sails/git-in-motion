@@ -1,9 +1,11 @@
 import type { Tutorial } from "./tutorialTypes";
 import type { RepoState } from "./types";
+import { advancedTutorials } from "./advancedTutorials";
 
-export const tutorials: Tutorial[] = [
+export const basicTutorials: Tutorial[] = [
   {
     id: "basics-101",
+    mode: "basic",
     title: "Git Basics 101",
     description: "Learn the fundamental Git commands: init, add, and commit. Perfect for absolute beginners!",
     difficulty: "beginner",
@@ -54,12 +56,13 @@ export const tutorials: Tutorial[] = [
           "This shows what branch you're on and what's changed"
         ],
         expectedCommands: ["git status"],
-        validate: (state: RepoState) => true, // Always passes after they run it
+        validate: (_state: RepoState) => true, // Always passes after they run it
       },
     ],
   },
   {
     id: "branching-basics",
+    mode: "basic",
     title: "Branching Basics",
     description: "Master branches - Git's killer feature. Learn to create, switch, and manage branches.",
     difficulty: "beginner",
@@ -132,6 +135,7 @@ export const tutorials: Tutorial[] = [
   },
   {
     id: "merging-101",
+    mode: "basic",
     title: "Merging 101",
     description: "Learn how to merge branches and handle merge conflicts like a pro.",
     difficulty: "intermediate",
@@ -203,12 +207,13 @@ export const tutorials: Tutorial[] = [
           "This preserves both branches' history"
         ],
         expectedCommands: ["git log"],
-        validate: (state: RepoState) => true,
+        validate: (_state: RepoState) => true,
       },
     ],
   },
   {
     id: "time-travel",
+    mode: "basic",
     title: "Time Travel with Reset",
     description: "Learn the power (and danger) of git reset. Undo commits and rewrite history.",
     difficulty: "intermediate",
@@ -265,12 +270,13 @@ export const tutorials: Tutorial[] = [
           "Use with extreme caution in real projects!"
         ],
         expectedCommands: ["git reset --hard"],
-        validate: (state: RepoState) => true,
+        validate: (_state: RepoState) => true,
       },
     ],
   },
   {
     id: "rebase-mastery",
+    mode: "basic",
     title: "Rebase Mastery",
     description: "Learn to rebase for a cleaner, linear history. Understand when to use rebase vs merge.",
     difficulty: "advanced",
@@ -321,7 +327,7 @@ export const tutorials: Tutorial[] = [
           "Cleaner history, but rewrites commits"
         ],
         expectedCommands: ["git log"],
-        validate: (state: RepoState) => true,
+        validate: (_state: RepoState) => true,
       },
       {
         id: "fast-forward-merge",
@@ -344,10 +350,17 @@ export const tutorials: Tutorial[] = [
   },
 ];
 
+export const tutorials: Tutorial[] = [...basicTutorials, ...advancedTutorials];
+
 export function getTutorialById(id: string): Tutorial | undefined {
   return tutorials.find(t => t.id === id);
 }
 
 export function getTutorialsByDifficulty(difficulty: "beginner" | "intermediate" | "advanced"): Tutorial[] {
   return tutorials.filter(t => t.difficulty === difficulty);
+}
+
+export function getTutorialsByMode(mode: "basic" | "advanced"): Tutorial[] {
+  if (mode === "basic") return basicTutorials;
+  return tutorials; // advanced shows all
 }

@@ -145,6 +145,22 @@ const getBranchesAtCommit = (commitId: string) => {
 
 // Calculate branch label offset to avoid overlapping
 const getBranchOffset = (branchIndex: number) => branchIndex * 28;
+
+// Get tags pointing to a specific commit (advanced mode)
+const getTagsAtCommit = (commitId: string) => {
+  return (props.state.tags ?? []).filter(t => t.commitId === commitId);
+};
+
+// Check if a commit is the bisect current/bad/result
+const getBisectStatus = (commitId: string): "bad" | "good" | "current" | null => {
+  const bisect = props.state.bisect;
+  if (!bisect?.active) return null;
+  if (bisect.result === commitId) return "bad";
+  if (bisect.current === commitId) return "current";
+  if (bisect.bad === commitId) return "bad";
+  if (bisect.good?.includes(commitId)) return "good";
+  return null;
+};
 </script>
 
 <template>
@@ -560,6 +576,67 @@ const getBranchOffset = (branchIndex: number) => branchIndex * 28;
           </g>
         </g>
 
+        <!-- Tag pointers (advanced mode) -->
+        <g class="tag-pointers" v-if="state.tags && state.tags.length > 0">
+          <g v-for="c in state.commits" :key="'tag-ptr-' + c.id">
+            <g
+              v-for="(tag, tIndex) in getTagsAtCommit(c.id)"
+              :key="tag.name"
+              class="tag-pointer"
+            >
+              <!-- Tag line (points right of commit) -->
+              <line
+                class="tag-line"
+                :x1="pos(c.x, c.y).cx + NODE_RADIUS + 5"
+                :y1="pos(c.x, c.y).cy - 20 - tIndex * 26"
+                :x2="pos(c.x, c.y).cx + NODE_RADIUS + 15"
+                :y2="pos(c.x, c.y).cy - 20 - tIndex * 26"
+              />
+              <!-- Tag rectangle -->
+              <rect
+                class="tag-rect"
+                :class="{ 'tag-rect--annotated': tag.isAnnotated }"
+                :x="pos(c.x, c.y).cx + NODE_RADIUS + 15"
+                :y="pos(c.x, c.y).cy - 31 - tIndex * 26"
+                :width="Math.min(tag.name.length * 7.5 + 24, 160)"
+                height="22"
+                rx="11"
+              />
+              <text
+                class="tag-name"
+                :x="pos(c.x, c.y).cx + NODE_RADIUS + 27"
+                :y="pos(c.x, c.y).cy - 16 - tIndex * 26"
+              >
+                🏷 {{ tag.name }}
+              </text>
+            </g>
+          </g>
+        </g>
+
+        <!-- Bisect markers -->
+        <g class="bisect-markers" v-if="state.bisect && state.bisect.active">
+          <g v-for="c in state.commits" :key="'bisect-' + c.id">
+            <g v-if="getBisectStatus(c.id)">
+              <circle
+                class="bisect-ring"
+                :class="`bisect-ring--${getBisectStatus(c.id)}`"
+                :cx="pos(c.x, c.y).cx"
+                :cy="pos(c.x, c.y).cy"
+                :r="NODE_RADIUS + 14"
+              />
+              <text
+                class="bisect-label"
+                :class="`bisect-label--${getBisectStatus(c.id)}`"
+                :x="pos(c.x, c.y).cx"
+                :y="pos(c.x, c.y).cy - NODE_RADIUS - 30"
+                text-anchor="middle"
+              >
+                {{ getBisectStatus(c.id) === "current" ? "testing" : getBisectStatus(c.id) }}
+              </text>
+            </g>
+          </g>
+        </g>
+
         <!-- HEAD label -->
         <g v-if="headPos" class="head-label" :class="{ 'head-label--detached': headPos.detached }">
           <rect
@@ -610,6 +687,10 @@ const getBranchOffset = (branchIndex: number) => branchIndex * 28;
         <div class="mini-legend-item">
           <span class="mini-dot mini-dot--orphan"></span>
           <span>Orphaned</span>
+        </div>
+        <div class="mini-legend-item" v-if="state.tags && state.tags.length > 0">
+          <span class="mini-dot mini-dot--tag"></span>
+          <span>Tag</span>
         </div>
       </div>
     </div>
@@ -702,6 +783,59 @@ const getBranchOffset = (branchIndex: number) => branchIndex * 28;
   border: 1px solid rgba(251, 191, 36, 0.25);
   border-radius: 999px;
 }
+
+/* Tag styles */
+.tag-line {
+  stroke: #fbbf24;
+  stroke-width: 1.5;
+  opacity: 0.7;
+}
+
+.tag-rect {
+  fill: rgba(251, 191, 36, 0.12);
+  stroke: rgba(251, 191, 36, 0.5);
+  stroke-width: 1;
+}
+
+.tag-rect--annotated {
+  fill: rgba(251, 191, 36, 0.2);
+  stroke: rgba(251, 191, 36, 0.7);
+  stroke-width: 1.5;
+}
+
+.tag-name {
+  font-size: 10px;
+  fill: #fbbf24;
+  font-weight: 600;
+  font-family: 'Inter', monospace;
+}
+
+/* Bisect styles */
+.bisect-ring {
+  fill: none;
+  stroke-width: 2.5;
+  stroke-dasharray: 5,3;
+}
+
+.bisect-ring--bad     { stroke: #f87171; }
+.bisect-ring--good    { stroke: #34d399; }
+.bisect-ring--current { stroke: #fbbf24; animation: bisectPulse 1.2s ease-in-out infinite; }
+
+@keyframes bisectPulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+.bisect-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.bisect-label--bad     { fill: #f87171; }
+.bisect-label--good    { fill: #34d399; }
+.bisect-label--current { fill: #fbbf24; }
 
 .graph__canvas {
   flex: 1;
@@ -1177,6 +1311,11 @@ const getBranchOffset = (branchIndex: number) => branchIndex * 28;
 .mini-dot--orphan {
   background: #6b7280;
   opacity: 0.5;
+}
+
+.mini-dot--tag {
+  background: #fbbf24;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.5);
 }
 
 /* Special commit type styles */

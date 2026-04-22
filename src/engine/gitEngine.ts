@@ -1,4 +1,4 @@
-import type { RepoState, Commit, StashEntry } from "./types";
+import type { RepoState, Commit, StashEntry, InteractiveRebaseStep } from "./types";
 
 // Generate a short random ID (like a mini git hash)
 const shortId = () => Math.random().toString(16).slice(2, 8);
@@ -75,6 +75,18 @@ const getCommitsBetween = (state: RepoState, base: string, tip: string): Commit[
     return commits.reverse();
 };
 
+// === Reflog helper ===
+const addReflogEntry = (state: RepoState, action: string, message: string) => {
+    if (!state.reflog) state.reflog = [];
+    const headRef = state.head?.type === "branch" ? state.head.name : "HEAD";
+    const commitId = currentHeadCommit(state);
+    // Shift indices of existing entries
+    state.reflog.forEach(e => { e.index++; });
+    state.reflog.unshift({ commitId, headRef, action, message, index: 0 });
+    // Keep only last 30
+    if (state.reflog.length > 30) state.reflog.length = 30;
+};
+
 export const makeInitialState = (): RepoState => ({
     initialized: false,
     stagingCount: 0,
@@ -101,6 +113,17 @@ Line 10: Master version control`
     ],
     stagingArea: [],
     conflicts: [],
+    tags: [],
+    reflog: [],
+    bisect: {
+        active: false,
+        bad: null,
+        good: [],
+        remaining: [],
+        current: null,
+        result: null,
+    },
+    pendingInteractiveRebase: null,
 });
 
 export type CommandResult =
@@ -276,6 +299,7 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
         state.stagingArea = [];
 
         const isFirst = state.commits.length === 1;
+        addReflogEntry(state, "commit", `commit: ${message}`);
         if (isFirst) {
             state.explanation = `🎉 First commit created! See the purple node? That's your commit "${message}". The \`main\` branch pointer now points to it, and HEAD points to main. This is the root of your project's history!`;
         } else {
@@ -412,6 +436,7 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             }
         }
 
+        addReflogEntry(state, "checkout", `checkout: moving to ${name}`);
         state.explanation = `🔀 Switched to "${name}"! HEAD now points to the \`${name}\` branch. Notice: the commits didn't move — switching branches just changes which branch HEAD points to. It's like changing which bookmark you're looking at.`;
         return { ok: true };
     }
@@ -446,7 +471,10 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             return { ok: true };
         }
 
-        const other = flag;
+        // Parse --no-ff and --squash flags
+        const noFf = parts.includes("--no-ff");
+        const squash = parts.includes("--squash");
+        const other = parts.find(p => !p.startsWith("-") && p !== "git" && p !== "merge");
         const active = state.activeBranch;
 
         if (!other) {
@@ -498,7 +526,7 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             return { ok: true };
         }
 
-        if (bAncestry.has(aHead)) {
+        if (bAncestry.has(aHead) && !noFf && !squash) {
             // Fast-forward merge!
             activeBranch.head = bHead;
 
@@ -511,7 +539,23 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
                 }));
             }
 
+            addReflogEntry(state, "merge", `merge ${other}: Fast-forward`);
             state.explanation = `⚡ **Fast-forward merge!** Since \`${active}\` was an ancestor of \`${other}\`, Git just moved the \`${active}\` pointer forward. No merge commit needed! This is the cleanest type of merge — it's like the branch never diverged.`;
+            return { ok: true };
+        }
+
+        // --squash: collect all new commits from other branch into staging, no merge commit
+        if (squash) {
+            const aCommitSq = state.commits.find(c => c.id === aHead);
+            const bCommitSq = state.commits.find(c => c.id === bHead);
+            if (!aCommitSq?.files || !bCommitSq?.files) {
+                return { ok: false, error: "Missing file data" };
+            }
+            // Stage all files from the other branch
+            state.stagingArea = Object.entries(bCommitSq.files).map(([path, content]) => ({ path, content }));
+            state.stagingCount = state.stagingArea.length;
+            addReflogEntry(state, "merge", `merge --squash ${other}`);
+            state.explanation = `📦 **Squash merge!** All commits from \`${other}\` have been squashed into your staging area. Now run \`git commit -m "...\"\` to create a single clean commit. This keeps \`${active}\`'s history linear while incorporating \`${other}\`'s changes.`;
             return { ok: true };
         }
 
@@ -592,7 +636,9 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             content,
         }));
 
-        state.explanation = `🔗 **Merge commit created!** This commit has TWO parents — one from \`${active}\` and one from \`${other}\`. The merge commit records the point where two lines of development joined. Both histories are preserved!`;
+        addReflogEntry(state, "merge", `merge ${other}: Merge made by the 'ort' strategy`);
+        const noFfNote = noFf ? " (**--no-ff** forced a merge commit even though fast-forward was possible.)" : "";
+        state.explanation = `🔗 **Merge commit created!** This commit has TWO parents — one from \`${active}\` and one from \`${other}\`. The merge commit records the point where two lines of development joined. Both histories are preserved!${noFfNote}`;
         return { ok: true };
     }
 
@@ -686,6 +732,7 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
             }));
         }
 
+        addReflogEntry(state, "rebase", `rebase: ${onto}: ${commitsToReplay.length} commit(s) rebased`);
         state.explanation = `🔄 **Rebase complete!** ${commitsToReplay.length} commit(s) were "replayed" on top of \`${onto}\`. The old commits still exist but are now orphaned (shown faded). Notice: same changes, NEW commit hashes! Rebase rewrites history — the commits are technically different objects. This creates a linear history without merge commits.`;
         return { ok: true };
     }
@@ -767,11 +814,13 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
 
         if (mode === "soft") {
             // Keep staging area
+            addReflogEntry(state, "reset", `reset: moving to ${targetCommit.id}`);
             state.explanation = `⏪ **Soft reset** to \`${targetCommit.id}\`! The branch pointer moved back, but your staged changes are preserved. The "undone" commits' changes are now in your staging area, ready to be recommitted differently. Great for combining commits!`;
         } else if (mode === "mixed") {
             // Clear staging area
             state.stagingCount = 0;
             state.stagingArea = [];
+            addReflogEntry(state, "reset", `reset: moving to ${targetCommit.id}`);
             state.explanation = `⏪ **Mixed reset** (default) to \`${targetCommit.id}\`! The branch pointer moved back AND the staging area was cleared. The changes from undone commits are still in your working directory, just unstaged. Use this to redo your staging.`;
         } else {
             // Hard reset - clear everything
@@ -786,7 +835,8 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
                 }));
             }
 
-            state.explanation = `⚠️ **Hard reset** to \`${targetCommit.id}\`! The branch pointer moved back, staging area cleared, AND working directory changes discarded. This is DANGEROUS — those changes are gone! Use this only when you want to truly abandon work.`;
+            addReflogEntry(state, "reset", `reset: moving to ${targetCommit.id}`);
+            state.explanation = `⚠️ **Hard reset** to \`${targetCommit.id}\`! The branch pointer moved back, staging area cleared, AND working directory changes discarded. This is DANGEROUS — those changes are gone! Use this only when you want to truly abandon work. (Check \`git reflog\` if you need to recover!)`;
         }
         return { ok: true };
     }
@@ -1101,7 +1151,436 @@ export function runCommand(state: RepoState, raw: string): CommandResult {
         }
     }
 
+    // === git tag ===
+    if (cmd === "tag") {
+        if (!state.tags) state.tags = [];
+
+        // git tag (list)
+        if (parts.length === 2) {
+            if (state.tags.length === 0) {
+                state.explanation = "No tags yet. Create one with `git tag <name>` or `git tag -a <name> -m \"message\"`.";
+                return { ok: true, message: "(no tags)" };
+            }
+            const list = state.tags.map(t => `${t.isAnnotated ? "🏷️ " : "  "}${t.name}`).join("\n");
+            state.explanation = `🏷️ Tags:\n${list}\n\nAnnotated tags (🏷️) store extra metadata. Use \`git tag -a <name> -m "msg"\` to create one.`;
+            return { ok: true, message: list };
+        }
+
+        // git tag -d <name>  (delete)
+        if (parts[2] === "-d") {
+            const name = parts[3];
+            if (!name) {
+                state.explanation = "Specify a tag to delete: `git tag -d <name>`";
+                return { ok: false, error: "Tag name required" };
+            }
+            const idx = state.tags.findIndex(t => t.name === name);
+            if (idx === -1) {
+                state.explanation = `Tag "${name}" not found.`;
+                return { ok: false, error: `Tag '${name}' not found` };
+            }
+            state.tags.splice(idx, 1);
+            state.explanation = `🗑️ Tag "${name}" deleted. The commits it pointed to still exist.`;
+            return { ok: true };
+        }
+
+        // git tag -a <name> -m "message"  (annotated)
+        if (parts[2] === "-a") {
+            const name = parts[3];
+            if (!name) {
+                state.explanation = "Specify a tag name: `git tag -a <name> -m \"message\"`";
+                return { ok: false, error: "Tag name required" };
+            }
+            const mIdx = parts.findIndex(p => p === "-m");
+            const message = mIdx >= 0 ? parts.slice(mIdx + 1).join(" ").replace(/^"|"$/g, "") : "";
+            if (!message) {
+                state.explanation = "Annotated tags need a message: `git tag -a <name> -m \"message\"`";
+                return { ok: false, error: "Message required for annotated tag" };
+            }
+            const headId = currentHeadCommit(state);
+            if (!headId) {
+                state.explanation = "No commits to tag yet.";
+                return { ok: false, error: "No commits" };
+            }
+            if (state.tags.some(t => t.name === name)) {
+                state.explanation = `Tag "${name}" already exists.`;
+                return { ok: false, error: `Tag '${name}' already exists` };
+            }
+            state.tags.push({ name, commitId: headId, message, isAnnotated: true });
+            addReflogEntry(state, "tag", `tag: ${name}`);
+            state.explanation = `🏷️ **Annotated tag "${name}" created!** It points to commit \`${headId}\` with message: "${message}". Annotated tags are permanent milestones — perfect for marking paper submissions, thesis chapters, or stable analysis versions. See the amber label on the graph!`;
+            return { ok: true };
+        }
+
+        // git tag <name>  (lightweight)
+        const tagName = parts[2];
+        if (!tagName) {
+            state.explanation = "Specify a tag name: `git tag <name>`";
+            return { ok: false, error: "Tag name required" };
+        }
+        const headId = currentHeadCommit(state);
+        if (!headId) {
+            state.explanation = "No commits to tag yet.";
+            return { ok: false, error: "No commits" };
+        }
+        if (state.tags.some(t => t.name === tagName)) {
+            state.explanation = `Tag "${tagName}" already exists.`;
+            return { ok: false, error: `Tag '${tagName}' already exists` };
+        }
+        state.tags.push({ name: tagName, commitId: headId, isAnnotated: false });
+        addReflogEntry(state, "tag", `tag: ${tagName}`);
+        state.explanation = `🏷️ Lightweight tag "${tagName}" created at \`${headId}\`. See the amber label in the graph! For important milestones, prefer annotated tags: \`git tag -a ${tagName} -m "description"\``;
+        return { ok: true };
+    }
+
+    // === git reflog ===
+    if (cmd === "reflog") {
+        if (!state.reflog || state.reflog.length === 0) {
+            state.explanation = "Reflog is empty — no HEAD movements recorded yet.";
+            return { ok: true, message: "Reflog is empty" };
+        }
+        const entries = state.reflog
+            .map(e => `HEAD@{${e.index}} ${e.headRef}: ${e.message}`)
+            .join("\n");
+        state.explanation = `📋 **Reflog** — every HEAD movement recorded:\n\n${entries}\n\n**Recovery tip:** Run \`git reset --hard HEAD@{N}\` to return to any previous state. Nothing is truly lost while it's in the reflog!`;
+        return { ok: true, message: entries };
+    }
+
+    // === git rebase -i ===
+    if (cmd === "rebase" && parts[2] === "-i") {
+        const target = parts[3];
+        const active = state.activeBranch;
+
+        if (!active) {
+            state.explanation = "Can't do interactive rebase in detached HEAD state. Switch to a branch first!";
+            return { ok: false, error: "Not on a branch" };
+        }
+
+        if (!target) {
+            state.explanation = "Specify how many commits: `git rebase -i HEAD~N` (e.g., HEAD~3 for last 3 commits)";
+            return { ok: false, error: "Specify target (e.g. HEAD~3)" };
+        }
+
+        // Parse HEAD~N
+        let n = 1;
+        if (target.startsWith("HEAD~")) {
+            n = parseInt(target.slice(5)) || 1;
+        } else {
+            state.explanation = "Use HEAD~N syntax: `git rebase -i HEAD~3`";
+            return { ok: false, error: "Use HEAD~N syntax" };
+        }
+
+        const activeBranch = state.branches[active];
+        if (!activeBranch?.head) {
+            state.explanation = "No commits to rebase.";
+            return { ok: false, error: "No commits" };
+        }
+
+        // Gather the last N commits (newest first, oldest first for display)
+        const commitsToRebase: Commit[] = [];
+        let current: string | null = activeBranch.head;
+        for (let i = 0; i < n && current; i++) {
+            const c = state.commits.find(co => co.id === current);
+            if (!c) break;
+            commitsToRebase.unshift(c); // oldest first
+            current = c.parents[0] ?? null;
+        }
+
+        if (commitsToRebase.length === 0) {
+            state.explanation = "Not enough commits to rebase.";
+            return { ok: false, error: "Not enough commits" };
+        }
+
+        // Find the onto commit (parent of the oldest commit in the selection)
+        const ontoCommitId = current ?? "";
+        const ontoName = ontoCommitId
+            ? Object.entries(state.branches).find(([, b]) => b.head === ontoCommitId)?.[0] ?? ontoCommitId
+            : "(root)";
+
+        state.pendingInteractiveRebase = {
+            active: true,
+            ontoCommitId,
+            ontoName,
+            steps: commitsToRebase.map(c => ({
+                action: "pick" as const,
+                commitId: c.id,
+                message: c.message,
+            })),
+        };
+
+        state.explanation = `✏️ **Interactive rebase panel open!** Adjust actions for each of the ${commitsToRebase.length} commit(s) — pick, squash, drop, or reword — then click Execute. This rewrites local history, so only do this before sharing!`;
+        return { ok: true, message: "Interactive rebase panel opened — adjust commits and click Execute" };
+    }
+
+    // === git bisect ===
+    if (cmd === "bisect") {
+        const sub = parts[2];
+        if (!state.bisect) {
+            state.bisect = { active: false, bad: null, good: [], remaining: [], current: null, result: null };
+        }
+
+        if (sub === "start") {
+            state.bisect = { active: true, bad: null, good: [], remaining: [], current: null, result: null };
+            state.explanation = `🔬 **Bisect started!** Now tell git which commit is broken with \`git bisect bad\` (marks HEAD as bad), and which was good with \`git bisect good <commit>\`. Git will do a binary search to find the first bad commit.`;
+            addReflogEntry(state, "bisect", "bisect: start");
+            return { ok: true, message: "Bisect started. Use 'git bisect bad' and 'git bisect good <commit>'" };
+        }
+
+        if (!state.bisect.active) {
+            state.explanation = "No bisect in progress. Start one with `git bisect start`.";
+            return { ok: false, error: "No bisect active" };
+        }
+
+        if (sub === "bad") {
+            const target = parts[3] ? parts[3] : currentHeadCommit(state);
+            if (!target) {
+                state.explanation = "No commit to mark as bad.";
+                return { ok: false, error: "No commit" };
+            }
+            state.bisect.bad = target;
+            addReflogEntry(state, "bisect", `bisect: bad ${target}`);
+            state.explanation = `🔴 Commit \`${target}\` marked as **bad** (broken). Now mark a known-good commit: \`git bisect good <commit-hash>\`. The hash can be found in the graph.`;
+            if (state.bisect.bad && state.bisect.good.length > 0) {
+                return _bisectNarrow(state);
+            }
+            return { ok: true, message: `Marked ${target} as bad` };
+        }
+
+        if (sub === "good") {
+            const target = parts[3] ? parts[3] : currentHeadCommit(state);
+            if (!target) {
+                state.explanation = "Specify a commit: `git bisect good <commit>`";
+                return { ok: false, error: "Specify commit" };
+            }
+            // Support HEAD~N references
+            let goodId = target;
+            if (target.startsWith("HEAD~")) {
+                const n = parseInt(target.slice(5)) || 1;
+                let cur: string | null = currentHeadCommit(state);
+                for (let i = 0; i < n && cur; i++) {
+                    const c = state.commits.find(co => co.id === cur);
+                    if (!c) break;
+                    cur = c.parents[0] ?? null;
+                }
+                if (cur) goodId = cur;
+            }
+            if (!state.bisect.good.includes(goodId)) {
+                state.bisect.good.push(goodId);
+            }
+            addReflogEntry(state, "bisect", `bisect: good ${goodId}`);
+            state.explanation = `🟢 Commit \`${goodId}\` marked as **good**. `;
+            if (state.bisect.bad && state.bisect.good.length > 0) {
+                return _bisectNarrow(state);
+            }
+            state.explanation += "Now mark the bad commit with `git bisect bad`.";
+            return { ok: true, message: `Marked ${goodId} as good` };
+        }
+
+        if (sub === "reset") {
+            state.bisect = { active: false, bad: null, good: [], remaining: [], current: null, result: null };
+            addReflogEntry(state, "bisect", "bisect: reset");
+            state.explanation = `✅ **Bisect session ended.** You're back on \`${state.activeBranch ?? "HEAD"}\`. If git identified the first bad commit, you now know exactly which change introduced the regression — inspect it with \`git show <hash>\`.`;
+            return { ok: true, message: "Bisect session ended" };
+        }
+
+        state.explanation = "Bisect sub-commands: start, bad, good, reset";
+        return { ok: false, error: `Unknown bisect sub-command: ${sub}` };
+    }
+
     // === Unknown command ===
-    state.explanation = `Command \`git ${cmd}\` isn't implemented. Available commands:\n• init, add, commit, branch, switch/checkout\n• merge, rebase, reset, revert, cherry-pick\n• stash, log, status, diff`;
+    state.explanation = `Command \`git ${cmd}\` isn't implemented. Available commands:\n• init, add, commit, branch, switch/checkout\n• merge, rebase, reset, revert, cherry-pick\n• stash, log, status, diff\n• tag, reflog, bisect (Advanced mode)`;
     return { ok: false, error: `Unknown: ${cmd}` };
+}
+
+// Bisect binary search narrowing logic
+function _bisectNarrow(state: RepoState): { ok: true; message: string } | { ok: false; error: string } {
+    const { bad, good } = state.bisect;
+    if (!bad || good.length === 0) return { ok: true, message: "Need both good and bad to narrow" };
+
+    // Compute commits between good and bad
+    const badCommit = state.commits.find(c => c.id === bad);
+    if (!badCommit) return { ok: true, message: "Bad commit not found in history" };
+
+    // Get ancestry from good commits
+    const goodSet = new Set<string>();
+    for (const g of good) {
+        getCommitAncestry(state, g).forEach(id => goodSet.add(id));
+    }
+
+    // Commits reachable from bad but not from good — candidates for the first bad commit
+    const candidates: string[] = [];
+    const toVisit = [bad];
+    const visited = new Set<string>();
+    while (toVisit.length > 0) {
+        const id = toVisit.pop()!;
+        if (visited.has(id) || goodSet.has(id)) continue;
+        visited.add(id);
+        candidates.push(id);
+        const c = state.commits.find(co => co.id === id);
+        if (c) toVisit.push(...c.parents);
+    }
+
+    state.bisect.remaining = candidates;
+
+    if (candidates.length === 1) {
+        const found = candidates[0] ?? bad;
+        state.bisect.result = found;
+        state.bisect.current = found;
+        state.explanation = `🎯 **First bad commit found: \`${found}\`!** This is the commit that introduced the regression. Run \`git bisect reset\` to end the session. Then inspect the commit with details in the graph.`;
+        return { ok: true, message: `First bad commit: ${found}` };
+    }
+
+    // Pick midpoint
+    const midIdx = Math.floor(candidates.length / 2);
+    const mid = candidates[midIdx] ?? candidates[0] ?? bad;
+    state.bisect.current = mid;
+
+    // Check out the midpoint commit in detached HEAD
+    const midCommit = state.commits.find(c => c.id === mid);
+    if (midCommit?.files) {
+        state.workingDirectory = Object.entries(midCommit.files).map(([path, content]) => ({ path, content }));
+    }
+    state.head = { type: "detached", commit: mid };
+    state.activeBranch = null;
+
+    const remaining = candidates.length;
+    state.explanation = `🔬 **Bisect: checking commit \`${mid}\`** (${remaining} commits remaining in search space). Test your analysis — is this commit broken or working? Run \`git bisect bad\` or \`git bisect good\` to continue.`;
+    addReflogEntry(state, "bisect", `bisect: checking ${mid} (${remaining} remaining)`);
+    return { ok: true, message: `Checking commit ${mid} — is this good or bad?` };
+}
+
+// === Execute interactive rebase ===
+export function executeInteractiveRebase(state: RepoState, steps: InteractiveRebaseStep[]): { ok: boolean; message?: string; error?: string } {
+    if (!state.pendingInteractiveRebase?.active) {
+        return { ok: false, error: "No pending interactive rebase" };
+    }
+
+    const plan = state.pendingInteractiveRebase;
+    const active = state.activeBranch;
+
+    if (!active) {
+        state.pendingInteractiveRebase = null;
+        return { ok: false, error: "No active branch" };
+    }
+
+    const activeBranch = state.branches[active];
+    if (!activeBranch) {
+        state.pendingInteractiveRebase = null;
+        return { ok: false, error: "Branch not found" };
+    }
+
+    let currentParent = plan.ontoCommitId;
+    const lane = activeBranch.lane;
+    let y = state.commits.length > 0 ? Math.max(...state.commits.map(c => c.y)) + 1 : 0;
+
+    let squashAccumulator: { messages: string[]; files: Record<string, string> } | null = null;
+    let createdCount = 0;
+    let lastNewId = currentParent;
+
+    for (const step of steps) {
+        if (step.action === "drop") continue;
+
+        const originalCommit = state.commits.find(c => c.id === step.commitId);
+        if (!originalCommit) continue;
+
+        if (step.action === "squash") {
+            // Accumulate into previous pick
+            if (!squashAccumulator) {
+                // Nothing to squash into yet — treat as pick
+                squashAccumulator = {
+                    messages: [step.message],
+                    files: { ...(originalCommit.files ?? {}) },
+                };
+            } else {
+                squashAccumulator.messages.push(step.message);
+                Object.assign(squashAccumulator.files, originalCommit.files ?? {});
+            }
+            continue;
+        }
+
+        // Flush any accumulated squash
+        if (squashAccumulator !== null) {
+            squashAccumulator.messages.push(step.message);
+            Object.assign(squashAccumulator.files, originalCommit.files ?? {});
+            const newCommit: Commit = {
+                id: shortId(),
+                parents: [currentParent],
+                message: squashAccumulator.messages.filter(Boolean).join(" + ").slice(0, 60),
+                x: lane,
+                y: y++,
+                isRebase: true,
+                originalId: step.commitId,
+                files: squashAccumulator.files,
+            };
+            state.commits.push(newCommit);
+            currentParent = newCommit.id;
+            lastNewId = newCommit.id;
+            squashAccumulator = null;
+            createdCount++;
+            continue;
+        }
+
+        // pick or reword
+        const message = (step.action === "reword" && step.newMessage?.trim())
+            ? step.newMessage.trim()
+            : step.message;
+
+        const newCommit: Commit = {
+            id: shortId(),
+            parents: [currentParent],
+            message,
+            x: lane,
+            y: y++,
+            isRebase: true,
+            originalId: step.commitId,
+            files: originalCommit.files,
+        };
+        state.commits.push(newCommit);
+        currentParent = newCommit.id;
+        lastNewId = newCommit.id;
+
+        if (step.action === "reword" && squashAccumulator === null) {
+            squashAccumulator = null;
+        }
+        createdCount++;
+    }
+
+    // Flush remaining squash accumulator
+    if (squashAccumulator !== null && steps.length > 0) {
+        const lastStep = steps[steps.length - 1]!;
+        const newCommit: Commit = {
+            id: shortId(),
+            parents: [currentParent],
+            message: squashAccumulator.messages.filter(Boolean).join(" + ").slice(0, 60),
+            x: lane,
+            y: y++,
+            isRebase: true,
+            originalId: lastStep.commitId,
+            files: squashAccumulator.files,
+        };
+        state.commits.push(newCommit);
+        lastNewId = newCommit.id;
+        createdCount++;
+    }
+
+    // Move branch pointer
+    if (lastNewId && lastNewId !== plan.ontoCommitId) {
+        activeBranch.head = lastNewId;
+    } else if (plan.ontoCommitId) {
+        // All commits dropped — move to onto commit
+        activeBranch.head = plan.ontoCommitId || activeBranch.head;
+    }
+
+    state.head = { type: "branch", name: active };
+    state.activeBranch = active;
+
+    // Update working directory
+    const tipCommit = state.commits.find(c => c.id === activeBranch.head);
+    if (tipCommit?.files) {
+        state.workingDirectory = Object.entries(tipCommit.files).map(([path, content]) => ({ path, content }));
+    }
+
+    state.pendingInteractiveRebase = null;
+    addReflogEntry(state, "rebase", `rebase -i: ${createdCount} commit(s) rewritten`);
+    state.explanation = `✨ **Interactive rebase complete!** ${createdCount} commit(s) created from ${steps.filter(s => s.action !== "drop").length} original. Old commits are now orphaned. Your history is clean and ready to share!`;
+    return { ok: true, message: `Rebase complete: ${createdCount} commit(s) created` };
 }

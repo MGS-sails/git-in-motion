@@ -17,6 +17,7 @@ export interface Tutorial {
   estimatedTime: string; // e.g., "5 min"
   icon: string;
   steps: TutorialStep[];
+  mode?: "basic" | "advanced"; // Which mode this tutorial belongs to
   // Initial state for this tutorial
   initialState?: () => any;
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref } from "vue";
+import { reactive, ref, watch, onMounted } from "vue";
 import Terminal from "./components/Terminal.vue";
 import Graph from "./components/Graph.vue";
 import FileViewer from "./components/FileViewer.vue";
@@ -7,26 +7,60 @@ import Explanation from "./components/Explanation.vue";
 import ConceptLegend from "./components/ConceptLegend.vue";
 import TutorialSelector from "./components/TutorialSelector.vue";
 import TutorialPanel from "./components/TutorialPanel.vue";
-import { makeInitialState, runCommand } from "./engine/gitEngine";
+import ModeSwitch from "./components/ModeSwitch.vue";
+import ReflogPanel from "./components/ReflogPanel.vue";
+import SavedStates from "./components/SavedStates.vue";
+import InteractiveRebaseModal from "./components/InteractiveRebaseModal.vue";
+import RebaseDemo from "./components/RebaseDemo.vue";
+import { makeInitialState, runCommand, executeInteractiveRebase } from "./engine/gitEngine";
 import type { Tutorial } from "./engine/tutorialTypes";
+import type { InteractiveRebaseStep } from "./engine/types";
+import { getPreferences, savePreferences, type SavedSession } from "./services/indexDB";
 
+// ── Mode ──────────────────────────────────────────────────────────────────────
+const mode = ref<"basic" | "advanced">("basic");
+
+// Load saved mode preference from IndexDB on startup
+onMounted(async () => {
+  try {
+    const prefs = await getPreferences();
+    if (prefs?.mode) mode.value = prefs.mode;
+  } catch {
+    // IndexDB unavailable — use default
+  }
+});
+
+// Save mode preference whenever it changes
+watch(mode, async (newMode) => {
+  try {
+    await savePreferences({ mode: newMode });
+  } catch { /* silent */ }
+});
+
+// ── Repo state ────────────────────────────────────────────────────────────────
 const state = reactive(makeInitialState());
 
 type Line = { kind: "in" | "out" | "err"; text: string; id: number };
 let lineId = 0;
 const lines = reactive<Line[]>([
-  { kind: "out", text: "Welcome to Git in Motion! 🚀", id: lineId++ },
+  { kind: "out", text: "Welcome to Git in Motion!", id: lineId++ },
   { kind: "out", text: "Start your journey with: git init", id: lineId++ },
 ]);
 
 const lastCommand = ref<string>("");
 
-// Tutorial state
-const showTutorialSelector = ref(false);
-const currentTutorial = ref<Tutorial | null>(null);
-const currentStepIndex = ref(0);
-const showCompletionModal = ref(false);
+// Update welcome message when mode changes
+watch(mode, (newMode) => {
+  if (newMode === "advanced" && lines.length <= 2) {
+    lines.push({
+      kind: "out",
+      text: "Advanced mode: git tag, git reflog, git rebase -i, git bisect now available.",
+      id: lineId++,
+    });
+  }
+});
 
+// ── Command handling ──────────────────────────────────────────────────────────
 function onRun(line: string) {
   lines.push({ kind: "in", text: line, id: lineId++ });
   lastCommand.value = line;
@@ -38,16 +72,41 @@ function onRun(line: string) {
   }
 }
 
+// ── Rebase demo ───────────────────────────────────────────────────────────────
+const showRebaseDemo = ref(false);
+const rebaseDemoSlide = ref(0);
+
+function toggleRebaseDemo() {
+  showRebaseDemo.value = !showRebaseDemo.value;
+  if (showRebaseDemo.value) showTutorialSelector.value = false;
+}
+
+function onDemoRunCommand(cmd: string) {
+  onRun(cmd);
+}
+
+function onDemoResetState() {
+  Object.assign(state, makeInitialState());
+  lines.length = 0;
+  lineId = 0;
+  lines.push({ kind: "out", text: "State reset for demo.", id: lineId++ });
+}
+
+// ── Tutorial state ────────────────────────────────────────────────────────────
+const showTutorialSelector = ref(false);
+const currentTutorial = ref<Tutorial | null>(null);
+const currentStepIndex = ref(0);
+const showCompletionModal = ref(false);
+
 function startTutorial(tutorial: Tutorial) {
   currentTutorial.value = tutorial;
   currentStepIndex.value = 0;
   showTutorialSelector.value = false;
 
-  // Reset state for tutorial
   Object.assign(state, makeInitialState());
   lines.length = 0;
   lineId = 0;
-  lines.push({ kind: "out", text: `🎓 Starting: ${tutorial.title}`, id: lineId++ });
+  lines.push({ kind: "out", text: `Starting: ${tutorial.title}`, id: lineId++ });
   lines.push({ kind: "out", text: tutorial.description, id: lineId++ });
 }
 
@@ -66,7 +125,6 @@ function nextStep() {
 
 function completeTutorial() {
   showCompletionModal.value = true;
-  // Auto-close after 3 seconds
   setTimeout(() => {
     showCompletionModal.value = false;
     exitTutorial();
@@ -75,6 +133,34 @@ function completeTutorial() {
 
 function openTutorialSelector() {
   showTutorialSelector.value = true;
+}
+
+// ── Interactive rebase ────────────────────────────────────────────────────────
+function onRebaseExecute(steps: InteractiveRebaseStep[]) {
+  const result = executeInteractiveRebase(state, steps);
+  if (!result.ok) {
+    lines.push({ kind: "err", text: result.error ?? "Rebase failed", id: lineId++ });
+  } else if (result.message) {
+    lines.push({ kind: "out", text: result.message, id: lineId++ });
+  }
+}
+
+function onRebaseCancel() {
+  if (state.pendingInteractiveRebase) {
+    state.pendingInteractiveRebase = null;
+    state.explanation = "Interactive rebase cancelled.";
+    lines.push({ kind: "out", text: "Rebase cancelled.", id: lineId++ });
+  }
+}
+
+// ── Saved sessions ────────────────────────────────────────────────────────────
+function onLoadSession(session: SavedSession) {
+  // Deep-restore state from saved session
+  Object.assign(state, JSON.parse(JSON.stringify(session.state)));
+  mode.value = session.mode;
+  lines.length = 0;
+  lineId = 0;
+  lines.push({ kind: "out", text: `Session "${session.name}" restored.`, id: lineId++ });
 }
 </script>
 
@@ -94,14 +180,29 @@ function openTutorialSelector() {
           </div>
           <div>
             <h1 class="header__title">Git in Motion</h1>
-            <p class="header__subtitle">Visual mental model for version control</p>
+            <p class="header__subtitle">
+              {{ mode === "advanced"
+                ? "Advanced Git for Life Sciences Research"
+                : "Visual mental model for version control" }}
+            </p>
           </div>
         </div>
         <div class="header__actions">
-          <button @click="openTutorialSelector" class="btn-tutorial" v-if="!currentTutorial">
-            <span class="tutorial-icon">🎓</span>
-            <span>Start Learning</span>
-          </button>
+          <div class="header__top-row">
+            <button @click="openTutorialSelector" class="btn-tutorial" v-if="!currentTutorial">
+              <span class="tutorial-icon">🎓</span>
+              <span>Start Learning</span>
+            </button>
+            <button
+              @click="toggleRebaseDemo"
+              :class="['btn-rebase-demo', { 'btn-rebase-demo--active': showRebaseDemo }]"
+              v-if="!currentTutorial"
+            >
+              <span>🔄</span>
+              <span>Rebase Guide</span>
+            </button>
+            <ModeSwitch v-model="mode" />
+          </div>
           <div class="header__concepts">
             <span class="chip chip--commit">
               <span class="chip__dot" style="background: var(--color-commit)"></span>
@@ -114,6 +215,10 @@ function openTutorialSelector() {
             <span class="chip chip--head">
               <span class="chip__dot" style="background: var(--color-head)"></span>
               HEAD = You are here
+            </span>
+            <span v-if="mode === 'advanced'" class="chip chip--tag">
+              <span class="chip__dot" style="background: #fbbf24"></span>
+              Tags = Milestones
             </span>
           </div>
         </div>
@@ -128,9 +233,16 @@ function openTutorialSelector() {
         <Graph :state="state" />
         <FileViewer :state="state" />
 
+        <!-- Advanced mode panels -->
+        <template v-if="mode === 'advanced'">
+          <ReflogPanel :state="state" />
+          <SavedStates :state="state" :mode="mode" @load="onLoadSession" />
+        </template>
+
         <!-- Tutorial Selector (when no tutorial is active) -->
         <TutorialSelector
           v-if="showTutorialSelector && !currentTutorial"
+          :mode="mode"
           @select="startTutorial"
           @close="showTutorialSelector = false"
         />
@@ -146,6 +258,15 @@ function openTutorialSelector() {
           @nextStep="nextStep"
         />
 
+        <!-- Rebase Demo Guide -->
+        <RebaseDemo
+          v-else-if="showRebaseDemo"
+          v-model:slide="rebaseDemoSlide"
+          :onRunCommand="onDemoRunCommand"
+          :onResetState="onDemoResetState"
+          @close="showRebaseDemo = false"
+        />
+
         <!-- Default Explanation (when no tutorial) -->
         <Explanation v-else :text="state.explanation" :lastCommand="lastCommand" />
 
@@ -153,7 +274,15 @@ function openTutorialSelector() {
       </div>
     </main>
 
-    <!-- Completion Modal -->
+    <!-- Interactive Rebase Modal -->
+    <InteractiveRebaseModal
+      v-if="state.pendingInteractiveRebase?.active"
+      :plan="state.pendingInteractiveRebase"
+      @execute="onRebaseExecute"
+      @cancel="onRebaseCancel"
+    />
+
+    <!-- Tutorial Completion Modal -->
     <Transition name="modal">
       <div v-if="showCompletionModal" class="modal-overlay" @click="showCompletionModal = false">
         <div class="completion-modal" @click.stop>
@@ -232,6 +361,12 @@ function openTutorialSelector() {
   gap: 1rem;
 }
 
+.header__top-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .btn-tutorial {
   display: flex;
   align-items: center;
@@ -254,18 +389,42 @@ function openTutorialSelector() {
   box-shadow: 0 6px 25px rgba(167, 139, 250, 0.5);
 }
 
+.btn-rebase-demo {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  border-radius: 12px;
+  color: var(--color-branch);
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.btn-rebase-demo:hover {
+  background: rgba(52, 211, 153, 0.18);
+  border-color: rgba(52, 211, 153, 0.5);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(52, 211, 153, 0.2);
+}
+
+.btn-rebase-demo--active {
+  background: rgba(52, 211, 153, 0.2);
+  border-color: rgba(52, 211, 153, 0.55);
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.15);
+}
+
 .tutorial-icon {
   font-size: 1.2rem;
   line-height: 1;
 }
 
 @keyframes tutorialPulse {
-  0%, 100% {
-    box-shadow: 0 4px 15px rgba(167, 139, 250, 0.3);
-  }
-  50% {
-    box-shadow: 0 6px 25px rgba(167, 139, 250, 0.5);
-  }
+  0%, 100% { box-shadow: 0 4px 15px rgba(167, 139, 250, 0.3); }
+  50%       { box-shadow: 0 6px 25px rgba(167, 139, 250, 0.5); }
 }
 
 .header__concepts {
@@ -333,12 +492,8 @@ function openTutorialSelector() {
 }
 
 @keyframes celebrationBounce {
-  0%, 100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.2) rotate(10deg);
-  }
+  0%, 100% { transform: scale(1); }
+  50%       { transform: scale(1.2) rotate(10deg); }
 }
 
 .completion-title {
@@ -392,14 +547,8 @@ function openTutorialSelector() {
 }
 
 @keyframes modalSlideUp {
-  from {
-    transform: translateY(30px);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
-  }
+  from { transform: translateY(30px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
 }
 
 @media (max-width: 1000px) {
@@ -415,6 +564,10 @@ function openTutorialSelector() {
   .header__actions {
     width: 100%;
     align-items: flex-start;
+  }
+
+  .header__top-row {
+    flex-wrap: wrap;
   }
 
   .header__concepts {

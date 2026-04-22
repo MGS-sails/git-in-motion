@@ -38,20 +38,68 @@ export type StashEntry = {
     files?: FileContent[]; // Stashed files
 };
 
+// === Advanced types ===
+
+export type Tag = {
+    name: string;
+    commitId: string;
+    message?: string;    // Only for annotated tags
+    isAnnotated: boolean;
+};
+
+export type ReflogEntry = {
+    commitId: string | null; // Commit HEAD pointed to at this moment
+    headRef: string;         // Branch name or "HEAD" (detached)
+    action: string;          // "commit", "reset", "checkout", "merge", "rebase", etc.
+    message: string;         // Full human-readable reflog message
+    index: number;           // HEAD@{index}
+};
+
+export type BisectState = {
+    active: boolean;
+    bad: string | null;       // Known bad commit
+    good: string[];           // Known good commits
+    remaining: string[];      // Commits still to test (ordered)
+    current: string | null;   // Commit currently being tested
+    result: string | null;    // First bad commit once found
+};
+
+export type InteractiveRebaseAction = 'pick' | 'squash' | 'drop' | 'reword';
+
+export type InteractiveRebaseStep = {
+    action: InteractiveRebaseAction;
+    commitId: string;
+    message: string;
+    newMessage?: string; // For reword action
+};
+
+export type PendingInteractiveRebase = {
+    active: boolean;
+    ontoCommitId: string;  // Commit ID to rebase onto
+    ontoName: string;      // Human-readable name (branch name)
+    steps: InteractiveRebaseStep[];
+};
+
 export type RepoState = {
     initialized: boolean;
     stagingCount: number;
 
     commits: Commit[];
     branches: Record<string, Branch>;
-    stash: StashEntry[];  // Stash stack
+    stash: StashEntry[];
 
     head: { type: "branch"; name: string } | { type: "detached"; commit: string } | null;
 
-    activeBranch: string | null; // convenience
+    activeBranch: string | null;
     explanation: string;
 
-    workingDirectory: FileContent[];  // Current file state (editable)
-    stagingArea: FileContent[];       // Staged files ready to commit
-    conflicts: ConflictMarkers[];     // Active merge conflicts
+    workingDirectory: FileContent[];
+    stagingArea: FileContent[];
+    conflicts: ConflictMarkers[];
+
+    // === Advanced state ===
+    tags: Tag[];
+    reflog: ReflogEntry[];
+    bisect: BisectState;
+    pendingInteractiveRebase: PendingInteractiveRebase | null;
 };

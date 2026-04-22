@@ -1,23 +1,29 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { Tutorial } from "../engine/tutorialTypes";
-import { tutorials } from "../engine/tutorials";
+import { getTutorialsByMode } from "../engine/tutorials";
+
+const props = defineProps<{ mode?: "basic" | "advanced" }>();
 
 const emit = defineEmits<{
   select: [tutorial: Tutorial];
   close: [];
 }>();
 
+const visibleTutorials = computed(() =>
+  getTutorialsByMode(props.mode ?? "basic")
+);
+
 const beginnerTutorials = computed(() =>
-  tutorials.filter(t => t.difficulty === "beginner")
+  visibleTutorials.value.filter(t => t.difficulty === "beginner")
 );
 
 const intermediateTutorials = computed(() =>
-  tutorials.filter(t => t.difficulty === "intermediate")
+  visibleTutorials.value.filter(t => t.difficulty === "intermediate")
 );
 
 const advancedTutorials = computed(() =>
-  tutorials.filter(t => t.difficulty === "advanced")
+  visibleTutorials.value.filter(t => t.difficulty === "advanced")
 );
 
 function selectTutorial(tutorial: Tutorial) {
